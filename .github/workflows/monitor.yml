@@ -2,9 +2,10 @@ name: Havo Monitoringi Pipeline
 
 on:
   schedule:
-    - cron: "0 * * * *"   # har soatda
-  workflow_dispatch:        # qo'lda ishga tushirish
-
+    - cron: "0 * * * *"
+  workflow_dispatch:
+  push:              # ← bu qo'shamiz
+    branches: [main]
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
