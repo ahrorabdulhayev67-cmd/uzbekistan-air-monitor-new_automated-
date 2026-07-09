@@ -1,0 +1,45 @@
+name: Havo Monitoringi Pipeline
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # har soatda
+  workflow_dispatch:        # qo'lda ishga tushirish
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Kodni yuklash
+        uses: actions/checkout@v4
+
+      - name: Python o'rnatish
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Kutubxonalar o'rnatish
+        run: pip install -r requirements.txt
+
+      - name: Pipeline ishga tushirish
+        env:
+          # ── Maxfiy kalitlar GitHub Secrets dan ──
+          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:           ${{ secrets.SUPABASE_KEY }}
+          DATAMETEO_USERNAME:     ${{ secrets.DATAMETEO_USERNAME }}
+          DATAMETEO_PASSWORD:     ${{ secrets.DATAMETEO_PASSWORD }}
+          DATAMETEO_API_TOKEN:    ${{ secrets.DATAMETEO_API_TOKEN }}
+          # ── Yo'llar ──
+          LOG_PATH:               unified_pipeline.log
+          DASHBOARD_JSON_PATH:    dashboard_data.json
+        run: python unified_pipeline.py
+
+      - name: Log ni artifact sifatida saqlash
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-log-${{ github.run_number }}
+          path: unified_pipeline.log
+          retention-days: 7
