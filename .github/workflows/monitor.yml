@@ -2,10 +2,9 @@ name: Havo Monitoringi Pipeline
 
 on:
   schedule:
-    - cron: "0 * * * *"
-  workflow_dispatch:
-  push:              # ← bu qo'shamiz
-    branches: [main]
+    - cron: "0 */3 * * *"  # har 3 soatda (00:00, 03:00, 06:00...)
+  workflow_dispatch:        # qo'lda ishga tushirish
+
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
@@ -22,19 +21,29 @@ jobs:
           cache: "pip"
 
       - name: Kutubxonalar o'rnatish
-        run: pip install -r requirements.txt
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: DNS va tarmoq tekshirish
+        run: |
+          echo "=== DNS tekshirish ==="
+          nslookup monitoring.meteo.uz || echo "monitoring.meteo.uz DNS xato"
+          nslookup data.meteo.uz       || echo "data.meteo.uz DNS xato"
+          nslookup api.open-meteo.com  || echo "open-meteo DNS xato"
+          echo "=== Ulanish tekshirish ==="
+          curl -s --max-time 10 -o /dev/null -w "%{http_code}" https://monitoring.meteo.uz/ || echo "monitoring.meteo.uz ulanmadi"
+          curl -s --max-time 10 -o /dev/null -w "%{http_code}" https://data.meteo.uz/      || echo "data.meteo.uz ulanmadi"
 
       - name: Pipeline ishga tushirish
         env:
-          # ── Maxfiy kalitlar GitHub Secrets dan ──
-          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY:           ${{ secrets.SUPABASE_KEY }}
-          DATAMETEO_USERNAME:     ${{ secrets.DATAMETEO_USERNAME }}
-          DATAMETEO_PASSWORD:     ${{ secrets.DATAMETEO_PASSWORD }}
-          DATAMETEO_API_TOKEN:    ${{ secrets.DATAMETEO_API_TOKEN }}
-          # ── Yo'llar ──
-          LOG_PATH:               unified_pipeline.log
-          DASHBOARD_JSON_PATH:    dashboard_data.json
+          SUPABASE_URL:        ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:        ${{ secrets.SUPABASE_KEY }}
+          DATAMETEO_USERNAME:  ${{ secrets.DATAMETEO_USERNAME }}
+          DATAMETEO_PASSWORD:  ${{ secrets.DATAMETEO_PASSWORD }}
+          DATAMETEO_API_TOKEN: ${{ secrets.DATAMETEO_API_TOKEN }}
+          LOG_PATH:            unified_pipeline.log
+          DASHBOARD_JSON_PATH: dashboard_data.json
         run: python unified_pipeline.py
 
       - name: Log ni artifact sifatida saqlash
