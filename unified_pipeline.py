@@ -19,6 +19,28 @@ Ishlatish:
 GitHub Actions yoki Task Scheduler bilan har soatda ishga tushirish.
 """
 
+"""
+unified_pipeline.py — O'zbekiston havo monitoringi
+To'rt manbadan ma'lumot yig'ib Supabase ga saqlaydi
+
+Manbalar:
+  1. monitoring.meteo.uz  → PM10, PM2.5, CO, SO2, NO, NO2, O3 (28 stantsiya)
+  2. Open-Meteo           → harorat, namlik, bosim, shamol, T850
+  3. data.meteo.uz/getcurrent → 14 viloyat harorati
+  4. data.meteo.uz/getStation → 101 meteo stantsiya (harorat, namlik, bosim, shamol)
+
+Tezlashtirish:
+  - ThreadPoolExecutor bilan parallel so'rovlar
+  - datameteo: 10 parallel, PM scraping: 5 parallel
+
+Xavfsizlik:
+  - Barcha tokenlar/parollar .env dan o'qiladi
+  - Kod ichida hech qanday maxfiy qiymat YOZILMAYDI
+
+Ishlatish:
+  python unified_pipeline.py
+"""
+
 import os
 import re
 import json
@@ -27,18 +49,19 @@ import logging
 import requests
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ── .env yuklash ──────────────────────────────────────────────────────────────
+# ── .env yuklash ──────────────────────────────────────────────
 try:
     from dotenv import load_dotenv
-    load_dotenv()  # .env faylidan o'qiydi
+    load_dotenv()
 except ImportError:
-    pass  # GitHub Actions da environment variable to'g'ridan yuklangan bo'ladi
+    pass
 
-# ── Auth manager ──────────────────────────────────────────────────────────────
+# ── Auth manager ──────────────────────────────────────────────
 from auth_manager import get_auth
 
-# ── Supabase ──────────────────────────────────────────────────────────────────
+# ── Supabase ──────────────────────────────────────────────────
 try:
     from supabase import create_client
     _url = os.environ.get("SUPABASE_URL", "")
@@ -53,7 +76,7 @@ except ValueError as e:
     supabase = None
     logging.warning("Supabase: %s", e)
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# ── Logging ───────────────────────────────────────────────────
 LOG_PATH = os.environ.get("LOG_PATH", "unified_pipeline.log")
 logging.basicConfig(
     level=logging.INFO,
@@ -65,18 +88,29 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Sozlamalar ────────────────────────────────────────────────────────────────
+# ── Sozlamalar ────────────────────────────────────────────────
 TASHKENT_LAT = 41.2995
 TASHKENT_LON = 69.2401
 STALE_HOURS  = 3
 
-# data.meteo.uz da topilgan stantsiya ID lari (1-150 oralig'ida 101 ta)
 DATAMETEO_STATION_IDS = list(range(1, 150))
 
+VAR_MAP = {
+    "Temp.Dry.10min.Average":        "temp_c",
+    "RelHumidity.10min.Average":     "humidity_pct",
+    "Press.Station.10min.Average":   "pressure_hpa",
+    "QNH.10min.Average":             "qnh_hpa",
+    "Wind.Speed.10min.Average":      "wind_speed_ms",
+    "Wind.Dir.10min.Average":        "wind_dir_deg",
+    "Prec.Rain.Gauge2.10min.Sum":    "precip_mm",
+    "Solar.Radiation.10min.Average": "solar_wm2",
+    "Temp.DewPoint":                 "dewpoint_c",
+}
 
-# ════════════════════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════
 # 1. monitoring.meteo.uz — PM va gazlar
-# ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 
 def get_monitoring_session() -> requests.Session:
     session = requests.Session()
@@ -90,7 +124,7 @@ def get_monitoring_session() -> requests.Session:
 
 
 def get_horiba_station_ids(session) -> list:
-    r = session.get("https://monitoring.meteo.uz/api/maps", timeout=15)
+    r    = session.get("https://monitoring.meteo.uz/api/maps", timeout=15)
     data = r.json()
     stations = []
     for group in data.get("data", []):
@@ -112,7 +146,7 @@ def scrape_station_pm(session, station_id: int) -> dict:
     r    = session.get(url, timeout=15)
     soup = BeautifulSoup(r.text, "html.parser")
 
-    result = {"station_id": station_id}
+    result    = {"station_id": station_id}
     param_map = {
         "PM 2.5":              "pm25",
         "PM 10":               "pm10",
@@ -155,10 +189,9 @@ def scrape_station_pm(session, station_id: int) -> dict:
 
 
 def collect_pm_data(session, stations: list) -> list:
-    now     = datetime.now(timezone.utc)
-    results = []
+    now = datetime.now(timezone.utc)
 
-    for st in stations:
+    def scrape_one(st):
         try:
             d = scrape_station_pm(session, st["id"])
             d["alias"]     = st["alias"]
@@ -171,27 +204,40 @@ def collect_pm_data(session, stations: list) -> list:
                 ts        = datetime.fromisoformat(d["timestamp"])
                 hours_old = (now - ts).total_seconds() / 3600
                 if hours_old > STALE_HOURS:
-                    log.warning("Stantsiya %s eski (%dh) — o'tkazib yuborildi",
+                    log.warning("Stantsiya %s eski (%dh) — o'tkazildi",
                                 st["id"], int(hours_old))
-                    continue
+                    return None
 
-            results.append(d)
             log.info("✓ %s (%s): PM10=%s PM2.5=%s",
-                     st["id"], st["alias"], d.get("pm10", "?"), d.get("pm25", "?"))
-            time.sleep(0.3)
+                     st["id"], st["alias"],
+                     d.get("pm10", "?"), d.get("pm25", "?"))
+            return d
 
         except Exception as e:
             log.error("Stantsiya %s xato: %s", st["id"], e)
+            return None
 
-    log.info("PM ma'lumotlar: %d/%d stantsiya yangi", len(results), len(stations))
+    results = []
+    # ASSUMPTION: monitoring.meteo.uz scraping uchun 5 parallel yetarli
+    # Server yukini kamaytirish uchun ko'proq qo'ymadik
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(scrape_one, st) for st in stations]
+        for future in as_completed(futures):
+            row = future.result()
+            if row:
+                results.append(row)
+
+    log.info("PM ma'lumotlar: %d/%d stantsiya yangi",
+             len(results), len(stations))
     return results
 
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 # 2. Open-Meteo — meteo parametrlar
-# ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 
-def fetch_open_meteo(lat: float = TASHKENT_LAT, lon: float = TASHKENT_LON) -> dict:
+def fetch_open_meteo(lat: float = TASHKENT_LAT,
+                     lon: float = TASHKENT_LON) -> dict:
     url    = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude":        lat,
@@ -224,19 +270,21 @@ def fetch_open_meteo(lat: float = TASHKENT_LAT, lon: float = TASHKENT_LON) -> di
             "source":          "open-meteo",
         }
         log.info("Open-Meteo: T=%.1f°C, WS=%.1f m/s, Hum=%.0f%%",
-                 result["temperature_2m"], result["wind_speed_ms"], result["humidity"])
+                 result["temperature_2m"],
+                 result["wind_speed_ms"],
+                 result["humidity"])
         return result
+
     except Exception as e:
         log.error("Open-Meteo xato: %s", e)
         return {}
 
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 # 3. data.meteo.uz/getcurrent — 14 viloyat harorati
-# ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 
 def fetch_data_meteo_regions() -> list:
-    """data.meteo.uz dan 14 viloyat harorati (auth kerak emas)."""
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
@@ -258,7 +306,9 @@ def fetch_data_meteo_regions() -> list:
             city   = item.get("city", {})
             dt_str = item.get("datetime", "")
             try:
-                dt        = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                dt        = datetime.strptime(
+                    dt_str, "%Y-%m-%d %H:%M:%S"
+                ).replace(tzinfo=timezone.utc)
                 hours_old = (now - dt).total_seconds() / 3600
                 if hours_old > STALE_HOURS:
                     continue
@@ -278,37 +328,21 @@ def fetch_data_meteo_regions() -> list:
                 "source":       "data.meteo.uz",
             })
 
-        log.info("data.meteo.uz viloyatlar: %d/%d yangi", len(results), len(current))
+        log.info("data.meteo.uz viloyatlar: %d/%d yangi",
+                 len(results), len(current))
         return results
+
     except Exception as e:
         log.error("data.meteo.uz/getcurrent xato: %s", e)
         return []
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-# 4. data.meteo.uz/getStation — 101 meteo stantsiya
-# ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
+# 4. data.meteo.uz/getStation — 149 meteo stantsiya (parallel)
+# ════════════════════════════════════════════════════════════════
 
 def fetch_datameteo_stations() -> list:
-    """
-    data.meteo.uz dan 101 meteo stantsiya ma'lumoti.
-    Parallel so'rovlar bilan tezlashtirilgan (10 ta bir vaqtda).
-    """
     auth = get_auth()
-
-    VAR_MAP = {
-        "Temp.Dry.10min.Average":        "temp_c",
-        "RelHumidity.10min.Average":     "humidity_pct",
-        "Press.Station.10min.Average":   "pressure_hpa",
-        "QNH.10min.Average":             "qnh_hpa",
-        "Wind.Speed.10min.Average":      "wind_speed_ms",
-        "Wind.Dir.10min.Average":        "wind_dir_deg",
-        "Prec.Rain.Gauge2.10min.Sum":    "precip_mm",
-        "Solar.Radiation.10min.Average": "solar_wm2",
-        "Temp.DewPoint":                 "dewpoint_c",
-    }
-
-    import urllib.parse
 
     def fetch_one(sid):
         try:
@@ -347,10 +381,8 @@ def fetch_datameteo_stations() -> list:
                     val_obj = var.get("Value", {})
                     if not val_obj:
                         continue
-                    # meastime — istalgan variable dan olish
                     if "meastime" not in row and val_obj.get("Meastime"):
                         row["meastime"] = val_obj.get("Meastime")
-                    # Faqat kerakli o'zgaruvchilar
                     if vname in VAR_MAP:
                         row[VAR_MAP[vname]] = val_obj.get("Value")
             return row
@@ -360,44 +392,34 @@ def fetch_datameteo_stations() -> list:
             return None
 
     results = []
-    errors  = 0
-    BATCH_SIZE = 30  # har bir batch
+    log.info("data.meteo.uz: %d stantsiya parallel yuklanmoqda...",
+             len(DATAMETEO_STATION_IDS))
 
-    for i in range(0, len(DATAMETEO_STATION_IDS), BATCH_SIZE):
-        batch = DATAMETEO_STATION_IDS[i:i + BATCH_SIZE]
-        batch_num = i // BATCH_SIZE + 1
-        total_batches = (len(DATAMETEO_STATION_IDS) + BATCH_SIZE - 1) // BATCH_SIZE
-        log.info("Batch %d/%d (stantsiya %d-%d)...",
-                 batch_num, total_batches, batch[0], batch[-1])
-
-        for sid in batch:
-            row = fetch_one(sid)
+    # ASSUMPTION: server 10 parallel so'rovni ko'tara oladi
+    # Agar server xato bersa, max_workers=5 ga tushiring
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {
+            executor.submit(fetch_one, sid): sid
+            for sid in DATAMETEO_STATION_IDS
+        }
+        done = 0
+        for future in as_completed(futures):
+            done += 1
+            row = future.result()
             if row:
                 results.append(row)
-                errors = 0
-            else:
-                errors += 1
-                if errors >= 3:
-                    log.warning("3 ta xato — session yangilanmoqda...")
-                    auth.initialized_at = None
-                    auth.ensure_session()
-                    errors = 0
-                    time.sleep(2)
-            time.sleep(1.0)
-
-        # Batch orasida 5 sekund dam
-        if i + BATCH_SIZE < len(DATAMETEO_STATION_IDS):
-            log.info("Batch %d tugadi — 5 sekund dam...", batch_num)
-            time.sleep(5)
+            if done % 50 == 0:
+                log.info("  data.meteo.uz: %d/%d tekshirildi...",
+                         done, len(DATAMETEO_STATION_IDS))
 
     results.sort(key=lambda x: x["station_id"])
     log.info("data.meteo.uz stantsiyalar: %d topildi", len(results))
     return results
 
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 # 5. Supabase ga saqlash
-# ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 
 def save_pm_to_supabase(pm_data: list, meteo: dict) -> int:
     if not supabase or not pm_data:
@@ -456,15 +478,13 @@ def save_meteo_regions_to_supabase(regions: list) -> int:
 
 
 def save_stations_to_supabase(stations: list) -> int:
-    """101 stantsiya ma'lumotini meteo_stations jadvaliga saqlash."""
     if not supabase or not stations:
         return 0
 
-    # meastime NULL bo'lganlarni o'tkazib yuborish
-    valid = [s for s in stations if s.get("meastime")]
+    valid   = [s for s in stations if s.get("meastime")]
     skipped = len(stations) - len(valid)
     if skipped:
-        log.warning("meteo_stations: %d stantsiya ma'lumot yo'q (NULL) — o'tkazildi", skipped)
+        log.warning("meteo_stations: %d stantsiya NULL — o'tkazildi", skipped)
     if not valid:
         log.warning("meteo_stations: saqlash uchun ma'lumot yo'q")
         return 0
@@ -480,11 +500,12 @@ def save_stations_to_supabase(stations: list) -> int:
         return 0
 
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 # 6. JSON eksport (dashboard uchun)
-# ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 
-def export_dashboard_json(pm_data: list, meteo: dict, regions: list, stations: list):
+def export_dashboard_json(pm_data: list, meteo: dict,
+                          regions: list, stations: list):
     payload = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "meteo":      meteo,
@@ -496,8 +517,10 @@ def export_dashboard_json(pm_data: list, meteo: dict, regions: list, stations: l
             "total_meteo_stations": len(stations),
             "max_pm10":  max((d.get("pm10") or 0 for d in pm_data), default=0),
             "max_pm25":  max((d.get("pm25") or 0 for d in pm_data), default=0),
-            "avg_pm10":  round(sum(d.get("pm10") or 0 for d in pm_data) / max(len(pm_data), 1), 1),
-            "avg_pm25":  round(sum(d.get("pm25") or 0 for d in pm_data) / max(len(pm_data), 1), 1),
+            "avg_pm10":  round(
+                sum(d.get("pm10") or 0 for d in pm_data) / max(len(pm_data), 1), 1),
+            "avg_pm25":  round(
+                sum(d.get("pm25") or 0 for d in pm_data) / max(len(pm_data), 1), 1),
         }
     }
 
@@ -510,32 +533,34 @@ def export_dashboard_json(pm_data: list, meteo: dict, regions: list, stations: l
         log.error("Dashboard JSON xato: %s", e)
 
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 # MAIN
-# ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 
 def main():
+    t0 = time.time()
     log.info("═" * 60)
     log.info("Unified pipeline ishga tushdi: %s",
              datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
 
-    # 1. monitoring.meteo.uz — PM
-    log.info("--- 1. monitoring.meteo.uz (PM) ---")
-    mon_session = get_monitoring_session()
-    stations    = get_horiba_station_ids(mon_session)
-    pm_data     = collect_pm_data(mon_session, stations)
+    # 1 & 2 — parallel ishga tushiramiz (PM scraping + Open-Meteo bir vaqtda)
+    log.info("--- 1+2. PM scraping va Open-Meteo (parallel) ---")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        mon_session  = get_monitoring_session()
+        stations_fut = executor.submit(get_horiba_station_ids, mon_session)
+        meteo_fut    = executor.submit(fetch_open_meteo)
+        meteo        = meteo_fut.result()
+        stations     = stations_fut.result()
 
-    # 2. Open-Meteo — meteo
-    log.info("--- 2. Open-Meteo ---")
-    meteo = fetch_open_meteo()
+    pm_data = collect_pm_data(mon_session, stations)
 
-    # 3. data.meteo.uz — viloyatlar
-    log.info("--- 3. data.meteo.uz (viloyatlar) ---")
-    regions = fetch_data_meteo_regions()
-
-    # 4. data.meteo.uz — 101 stantsiya
-    log.info("--- 4. data.meteo.uz (stantsiyalar) ---")
-    meteo_stations = fetch_datameteo_stations()
+    # 3 & 4 — parallel ishga tushiramiz (viloyatlar + meteo stantsiyalar)
+    log.info("--- 3+4. data.meteo.uz (parallel) ---")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        regions_fut  = executor.submit(fetch_data_meteo_regions)
+        stations_fut = executor.submit(fetch_datameteo_stations)
+        regions        = regions_fut.result()
+        meteo_stations = stations_fut.result()
 
     # 5. Supabase ga saqlash
     log.info("--- 5. Supabase ---")
@@ -546,9 +571,9 @@ def main():
     # 6. Dashboard JSON
     export_dashboard_json(pm_data, meteo, regions, meteo_stations)
 
-    # Yakuniy hisobot
+    elapsed = time.time() - t0
     log.info("═" * 60)
-    log.info("NATIJA:")
+    log.info("NATIJA (%.1f sekund):", elapsed)
     log.info("  PM stantsiyalar:    %d ta", len(pm_data))
     log.info("  Meteo stantsiyalar: %d ta", len(meteo_stations))
     log.info("  Viloyatlar:         %d ta", len(regions))
