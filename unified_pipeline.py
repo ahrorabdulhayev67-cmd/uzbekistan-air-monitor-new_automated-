@@ -119,7 +119,10 @@ def get_monitoring_session() -> requests.Session:
         "Accept":     "application/json, text/plain, */*",
         "Referer":    "https://monitoring.meteo.uz/",
     })
-    session.get("https://monitoring.meteo.uz/", timeout=15)
+    try:
+        session.get("https://monitoring.meteo.uz/", timeout=15)
+    except Exception as e:
+        log.warning("monitoring.meteo.uz session xato: %s — davom etiladi", e)
     return session
 
 
