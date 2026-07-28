@@ -2,7 +2,7 @@ name: Havo Monitoringi Pipeline
 
 on:
   schedule:
-    - cron: "0 */3 * * *"  # har 3 soatda (00:00, 03:00, 06:00...)
+    - cron: "0 * * * *"  # har soatda
   workflow_dispatch:        # qo'lda ishga tushirish
 
 jobs:
