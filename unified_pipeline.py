@@ -127,22 +127,50 @@ def get_monitoring_session() -> requests.Session:
 
 
 def get_horiba_station_ids(session) -> list:
-    r    = session.get("https://monitoring.meteo.uz/api/maps", timeout=15)
-    data = r.json()
-    stations = []
-    for group in data.get("data", []):
-        for st in group.get("stations", []):
-            if st.get("is_horiba"):
-                stations.append({
-                    "id":        int(st["id"]),
-                    "alias":     st.get("alias", ""),
-                    "region_id": st.get("region_id", ""),
-                    "lat":       float(st.get("lat", 0)),
-                    "lon":       float(st.get("lon", 0)),
-                })
-    log.info("Horiba stantsiyalar: %d ta", len(stations))
-    return stations
+    try:
+        r = session.get("https://monitoring.meteo.uz/api/maps", timeout=15)
+        
+        if r.status_code != 200:
+            log.warning(f"Horiba API status: {r.status_code} — fallback")
+            return _horiba_fallback_stations()
+        
+        if not r.text.strip():
+            log.warning("Horiba API bo'sh javob — fallback")
+            return _horiba_fallback_stations()
+        
+        data = r.json()
+        stations = []
+        for group in data.get("data", []):
+            for st in group.get("stations", []):
+                if st.get("is_horiba"):
+                    stations.append({
+                        "id":        int(st["id"]),
+                        "alias":     st.get("alias", ""),
+                        "region_id": st.get("region_id", ""),
+                        "lat":       float(st.get("lat", 0)),
+                        "lon":       float(st.get("lon", 0)),
+                    })
+        log.info("Horiba stantsiyalar: %d ta", len(stations))
+        return stations
 
+    except Exception as e:
+        log.warning(f"Horiba API xato: {e} — fallback")
+        return _horiba_fallback_stations()
+
+
+def _horiba_fallback_stations() -> list:
+    """Hardcoded stansiyalar — API ishlamasa"""
+    return [
+        {"id": 107, "alias": "uzgidromet",  "region_id": "10", "lat": 41.2995, "lon": 69.2401},
+        {"id": 108, "alias": "chilonzor",   "region_id": "10", "lat": 41.2794, "lon": 69.1986},
+        {"id": 720, "alias": "ttz4",        "region_id": "10", "lat": 41.3200, "lon": 69.2700},
+        {"id": 729, "alias": "yangiuzb",    "region_id": "10", "lat": 41.2630, "lon": 69.3200},
+        {"id": 730, "alias": "safia",       "region_id": "10", "lat": 41.3100, "lon": 69.2100},
+        {"id": 731, "alias": "greenuniv",   "region_id": "10", "lat": 41.3400, "lon": 69.2900},
+        {"id": 732, "alias": "tashselmash", "region_id": "10", "lat": 41.2800, "lon": 69.3100},
+        {"id": 734, "alias": "almazar",     "region_id": "10", "lat": 41.3600, "lon": 69.3300},
+        {"id": 738, "alias": "qibray",      "region_id": "10", "lat": 41.4200, "lon": 69.4600},
+    ]
 
 def scrape_station_pm(session, station_id: int) -> dict:
     url  = f"https://monitoring.meteo.uz/ru/map/view/{station_id}"
