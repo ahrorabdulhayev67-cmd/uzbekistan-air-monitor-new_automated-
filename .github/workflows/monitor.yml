@@ -1,9 +1,13 @@
 name: Havo Monitoringi Pipeline
 
 on:
+  workflow_dispatch:          # asosiy: Supabase pg_cron har soat :13 da chaqiradi
   schedule:
-    - cron: "0 * * * *"  # har soatda
-  workflow_dispatch:        # qo'lda ishga tushirish
+    - cron: "43 * * * *"      # zaxira: soat boshidan uzoq (GitHub soat boshida eng band)
+
+concurrency:                  # bir vaqtda ikkita run bo'lmasin
+  group: collector
+  cancel-in-progress: false
 
 jobs:
   run-pipeline:
@@ -32,8 +36,8 @@ jobs:
           nslookup data.meteo.uz       || echo "data.meteo.uz DNS xato"
           nslookup api.open-meteo.com  || echo "open-meteo DNS xato"
           echo "=== Ulanish tekshirish ==="
-          curl -s --max-time 10 -o /dev/null -w "%{http_code}" https://monitoring.meteo.uz/ || echo "monitoring.meteo.uz ulanmadi"
-          curl -s --max-time 10 -o /dev/null -w "%{http_code}" https://data.meteo.uz/      || echo "data.meteo.uz ulanmadi"
+          curl -s --max-time 10 -o /dev/null -w "%{http_code}\n" https://monitoring.meteo.uz/ || echo "monitoring.meteo.uz ulanmadi"
+          curl -s --max-time 10 -o /dev/null -w "%{http_code}\n" https://data.meteo.uz/      || echo "data.meteo.uz ulanmadi"
 
       - name: Pipeline ishga tushirish
         env:
