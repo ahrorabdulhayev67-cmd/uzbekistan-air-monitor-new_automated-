@@ -1,0 +1,28 @@
+name: TashkentAQ xaritalar (SILAM + CAMS)
+
+on:
+  schedule:
+    - cron: "17 14 * * *"      # har kuni 19:17 Toshkent vaqti (CAMS 00Z chiqqandan keyin)
+  workflow_dispatch:
+
+concurrency:
+  group: maps
+  cancel-in-progress: false
+
+jobs:
+  maps:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Kutubxonalar
+        run: pip install numpy pandas==2.3.3 xarray netCDF4 cdsapi requests supabase==2.31.0
+      - name: Xarita qatlamlari
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ADS_KEY: ${{ secrets.ADS_KEY }}
+        run: python v81/maps_pipeline.py
