@@ -20,7 +20,7 @@ L_KM, PRIOR_W = 150.0, 0.5                     # nisbat maydoni: Gauss masshtabi
 MW = {"no2": 46.01, "so2": 64.07, "o3": 48.00, "co": 28.01}   # g/mol; havo 28.97
 UNITS = {"pm25": "µg/m³", "pm10": "µg/m³", "no2": "µg/m³", "so2": "µg/m³", "o3": "µg/m³", "co": "mg/m³", "dust": "AOD"}
 
-sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+sb = create_client(os.environ["SUPABASE_URL"].strip(), os.environ["SUPABASE_KEY"].strip())
 st = sb.storage.from_(BUCKET)
 NOW = pd.Timestamp.now(tz="UTC").floor("h").tz_localize(None)
 
@@ -54,7 +54,7 @@ def fetch_silam():
 # ------------------------------------------------------------------ CAMS
 def fetch_cams():
     import cdsapi
-    c = cdsapi.Client(url="https://ads.atmosphere.copernicus.eu/api", key=os.environ["ADS_KEY"], quiet=True)
+    c = cdsapi.Client(url="https://ads.atmosphere.copernicus.eu/api", key=os.environ["ADS_KEY"].strip(), quiet=True)
     area = [BBOX["lat1"], BBOX["lon0"], BBOX["lat0"], BBOX["lon1"]]
     last_err = None
     for back in [0, 1]:
