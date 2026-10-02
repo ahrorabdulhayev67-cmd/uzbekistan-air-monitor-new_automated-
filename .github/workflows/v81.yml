@@ -1,0 +1,35 @@
+name: TashkentAQ V8.1 prognoz
+
+on:
+  workflow_run:
+    workflows: ["Havo Monitoringi Pipeline"]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: v81
+  cancel-in-progress: false
+
+jobs:
+  infer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: v81/requirements_v81.txt
+
+      - name: Kutubxonalar
+        run: |
+          pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r v81/requirements_v81.txt
+
+      - name: V8.1 prognoz
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python v81/v81_inference.py

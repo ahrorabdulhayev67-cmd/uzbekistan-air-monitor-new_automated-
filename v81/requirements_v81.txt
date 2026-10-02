@@ -1,0 +1,11 @@
+lightgbm==4.6.0
+pandas==2.3.3
+numpy==2.3.5
+scikit-learn==1.7.2
+scipy==1.16.3
+pytorch-forecasting==1.8.0
+lightning==2.6.6
+supabase==2.31.0
+requests
+python-dotenv
+pyarrow
