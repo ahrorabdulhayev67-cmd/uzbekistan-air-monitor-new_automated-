@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Toshkent havosi</title>
+  <meta name="description" content="Toshkent havo sifati: real vaqt o'lchovlari va 24 soatlik prognoz">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+  <link href="style.css" rel="stylesheet">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <div class="brand-name">Toshkent havosi</div>
+        <div class="brand-sub">Havo sifati monitoringi va prognozi</div>
+      </div>
+    </div>
+    <nav class="tabs">
+      <a class="tab active" href="index.html">Hozir</a>
+      <a class="tab" href="maps.html">Xaritalar</a>
+      <a class="tab disabled" title="Tez orada">Aniqlik</a>
+      <a class="tab disabled" title="Tez orada">Hisobotlar</a>
+    </nav>
+    <div class="updated" id="updated">Yuklanmoqda…</div>
+  </header>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <main class="grid">
+    <!-- Umumiy holat -->
+    <section class="card hero" id="hero">
+      <div class="hero-top">
+        <div>
+          <div class="eyebrow">Toshkent · hozir</div>
+          <h1 id="hero-cat">—</h1>
+          <p id="hero-advice" class="advice"></p>
+        </div>
+        <div class="hero-badge" id="hero-badge">—</div>
+      </div>
+      <div class="hero-metrics">
+        <div class="metric"><span class="m-label">PM2.5</span><span class="m-val" id="m-pm25">—</span><span class="m-unit">µg/m³</span></div>
+        <div class="metric"><span class="m-label">PM10</span><span class="m-val" id="m-pm10">—</span><span class="m-unit">µg/m³</span></div>
+        <div class="metric"><span class="m-label">Eng yuqori</span><span class="m-val small" id="m-worst">—</span></div>
+      </div>
+      <div class="hero-foot" id="hero-foot">Stansiyalar medianasi · DSanQN 0276-09 toifalari</div>
+    </section>
+
+    <!-- Qulay vaqt -->
+    <section class="card best" id="best">
+      <div class="eyebrow">Ochiq havoda faoliyat uchun</div>
+      <div class="best-time" id="best-time">—</div>
+      <p class="muted" id="best-note">Prognoz asosida, 07:00–21:00 oralig'ida eng toza 3 soat</p>
+    </section>
+
+    <!-- Prognoz grafigi -->
+    <section class="card wide">
+      <div class="card-head">
+        <div>
+          <h2>O'tgan 24 soat va keyingi 24 soat</h2>
+          <p class="muted" id="fc-sub">Toshkent markazi · kuzatuv va prognoz (80% ehtimollik oralig'i)</p>
+        </div>
+        <div class="seg" id="fc-pol">
+          <button data-pol="pm25" class="on">PM2.5</button>
+          <button data-pol="pm10">PM10</button>
+        </div>
+      </div>
+      <div id="fc-chart" class="chart"></div>
+      <div class="strip" id="fc-strip"></div>
+      <p class="muted small">Grafik tepasidagi model nomlarini bosib, har bir modelning prognozini alohida yoqish mumkin.</p>
+      <div class="table-wrap"><table class="mtable" id="m-table"></table></div>
+    </section>
+
+    <!-- Stansiyalar -->
+    <section class="card">
+      <div class="card-head">
+        <h2>Stansiyalar</h2>
+        <div class="seg" id="st-pol">
+          <button data-pol="pm25" class="on">PM2.5</button>
+          <button data-pol="pm10">PM10</button>
+        </div>
+      </div>
+      <ul class="stations" id="stations"></ul>
+      <p class="muted small">Ro'yxatdagi stansiyani bosing — uning 48 soatlik grafigi chiqadi.</p>
+    </section>
+
+    <!-- Xarita -->
+    <section class="card map-card">
+      <div id="map"></div>
+      <div class="legend" id="legend"></div>
+    </section>
+
+    <!-- Stansiya grafigi -->
+    <section class="card wide">
+      <div class="card-head">
+        <div>
+          <h2 id="st-title">Stansiya: —</h2>
+          <p class="muted">So'nggi 48 soat, soatlik o'rtacha o'lchovlar</p>
+        </div>
+      </div>
+      <div id="st-chart" class="chart small"></div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>Prognoz: V8.1 ansambl (LightGBM kvantil regressiyasi, fizik box-model, Temporal Fusion Transformer) · meteorologiya: GFS · global fon: CAMS.
+       Prognoz hozircha Toshkent markazi stansiyasi uchun beriladi. Toifalar DSanQN 0276-09 chegaralari bo'yicha.</p>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

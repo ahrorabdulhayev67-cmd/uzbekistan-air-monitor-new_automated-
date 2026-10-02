@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Xaritalar · Toshkent havosi</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+  <link href="style.css" rel="stylesheet">
+  <link href="maps.css" rel="stylesheet">
+</head>
+<body class="maps-page">
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <div class="brand-name">Toshkent havosi</div>
+        <div class="brand-sub">Havo sifati monitoringi va prognozi</div>
+      </div>
+    </div>
+    <nav class="tabs">
+      <a class="tab" href="index.html">Hozir</a>
+      <a class="tab active" href="maps.html">Xaritalar</a>
+      <a class="tab disabled" title="Tez orada">Aniqlik</a>
+      <a class="tab disabled" title="Tez orada">Hisobotlar</a>
+    </nav>
+    <div class="updated" id="updated">Yuklanmoqda…</div>
+  </header>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <main class="mapwrap">
+    <aside class="panel">
+      <div class="ctl">
+        <div class="ctl-label">Qatlam</div>
+        <div class="seg seg-col" id="mode">
+          <button data-v="silam" class="on">O'zbekiston · SILAM</button>
+          <button data-v="cams">O'zbekiston · CAMS</button>
+          <button data-v="tashkent">Toshkent · 100 m</button>
+        </div>
+      </div>
+      <div class="ctl">
+        <div class="ctl-label">Modda</div>
+        <div class="chips" id="vars"></div>
+      </div>
+      <div class="ctl" id="corr-ctl">
+        <label class="switch"><input type="checkbox" id="corr"> <span>Stansiyalar bo'yicha tuzatilgan</span></label>
+        <div class="muted small" id="corr-note"></div>
+      </div>
+      <div class="ctl">
+        <div class="ctl-label">Shkala</div>
+        <div class="legend2" id="legend"></div>
+        <div class="muted small" id="legend-note"></div>
+      </div>
+      <div class="ctl info" id="info"></div>
+    </aside>
+
+    <section class="mapcol">
+      <div class="mapbox"><div id="map"></div>
+        <div class="maptime" id="maptime">—</div>
+      </div>
+      <div class="timebar">
+        <button class="play" id="play" title="Animatsiya">▶</button>
+        <input type="range" id="slider" min="0" max="0" value="0">
+        <div class="tlabel" id="tlabel">—</div>
+        <select id="speed" title="Tezlik">
+          <option value="1200">0.5×</option><option value="700" selected>1×</option><option value="350">2×</option>
+        </select>
+      </div>
+      <div class="card pt-card hidden" id="pt-card">
+        <div class="card-head"><div><h2 id="pt-title">Nuqta</h2><p class="muted" id="pt-sub"></p></div>
+          <button class="x" id="pt-close" title="Yopish">×</button></div>
+        <div id="pt-chart" class="chart small"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot" id="foot"></footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <script src="config.js"></script>
+  <script src="maps.js"></script>
+</body>
+</html>
