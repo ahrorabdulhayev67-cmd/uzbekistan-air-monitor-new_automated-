@@ -11,15 +11,15 @@ concurrency:                  # bir vaqtda ikkita run bo'lmasin
 
 jobs:
   run-pipeline:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
       - name: Kodni yuklash
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Python o'rnatish
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: "pip"
@@ -52,7 +52,7 @@ jobs:
 
       - name: Log ni artifact sifatida saqlash
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: pipeline-log-${{ github.run_number }}
           path: unified_pipeline.log
