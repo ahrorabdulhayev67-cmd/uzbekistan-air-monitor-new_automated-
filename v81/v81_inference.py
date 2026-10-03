@@ -20,7 +20,7 @@ LAGS, SRC = [1, 2, 3, 6, 12, 24], ["kyzylkum", "aralkum", "karakum"]
 UZ_HOL = {}                                     # o'qitishda holiday=0 bo'lgan → skew bo'lmasligi uchun
 SEASON = {12:"qish",1:"qish",2:"qish",3:"bahor",4:"bahor",5:"bahor",6:"yoz",7:"yoz",8:"yoz",9:"kuz",10:"kuz",11:"kuz"}
 GRP = lambda lead: np.digitize(lead, [3.5, 6.5, 12.5])
-ENS_MEMBERS = ["A-rel", "B", "C"]
+ENS_MEMBERS = ["A-rel", "B"]
 
 # ------------------------------------------------------------------ yordamchi
 def _sincos(x, p): a = 2*np.pi*x/p; return np.sin(a), np.cos(a)
