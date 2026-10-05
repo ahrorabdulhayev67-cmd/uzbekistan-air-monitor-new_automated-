@@ -1,0 +1,32 @@
+name: TashkentAQ V8.1 aniqlik
+
+on:
+  schedule:
+    - cron: "25 */3 * * *"      # har 3 soatda: verifikatsiya + PDF yangilanadi
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Qayta hisoblanadigan kunlar soni (birinchi marta: 7)"
+        default: "3"
+
+concurrency:
+  group: v81-verify
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Kutubxonalar
+        run: pip install numpy pandas==2.3.3 matplotlib supabase==2.31.0
+      - name: Verifikatsiya va PDF
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          VERIFY_DAYS: ${{ github.event.inputs.days || '3' }}
+        run: python v81/v81_verify.py

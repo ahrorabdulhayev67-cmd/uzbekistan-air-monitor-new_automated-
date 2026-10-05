@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aniqlik · Toshkent havosi</title>
+  <meta name="description" content="Prognoz modellarining aniqligi: kuzatuvlar bilan doimiy taqqoslash">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <link href="style.css" rel="stylesheet">
+  <link href="accuracy.css" rel="stylesheet">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script>try { const tg = window.Telegram && Telegram.WebApp; if (tg && tg.initData !== undefined) { tg.ready(); tg.expand(); } } catch (e) {}</script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <div class="brand-name">Toshkent havosi</div>
+        <div class="brand-sub">Havo sifati monitoringi va prognozi</div>
+      </div>
+    </div>
+    <nav class="tabs">
+      <a class="tab" href="index.html">Hozir</a>
+      <a class="tab" href="maps.html">Xaritalar</a>
+      <a class="tab active" href="accuracy.html">Aniqlik</a>
+      <a class="tab disabled" title="Tez orada">Hisobotlar</a>
+    </nav>
+    <div class="updated" id="updated">Yuklanmoqda…</div>
+  </header>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <main class="grid">
+    <!-- Boshqaruv -->
+    <section class="card wide controls">
+      <div class="ctl">
+        <div class="ctl-label">Modda</div>
+        <div class="seg" id="c-pol">
+          <button data-v="pm25" class="on">PM2.5</button>
+          <button data-v="pm10">PM10</button>
+        </div>
+      </div>
+      <div class="ctl">
+        <div class="ctl-label">Davr</div>
+        <div class="seg" id="c-days">
+          <button data-v="7" class="on">7 kun</button>
+          <button data-v="30">30 kun</button>
+          <button data-v="0">Hammasi</button>
+        </div>
+      </div>
+      <div class="ctl">
+        <div class="ctl-label">Stansiya</div>
+        <select id="c-st" class="select"></select>
+      </div>
+      <div class="ctl pdf">
+        <div class="ctl-label">PDF hisobot</div>
+        <div class="pdf-btns">
+          <button class="btn" data-days="7">⤓ 7 kun</button>
+          <button class="btn" data-days="30">⤓ 30 kun</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Umumiy jadval -->
+    <section class="card wide">
+      <div class="card-head">
+        <div>
+          <h2>Modellar reytingi</h2>
+          <p class="muted" id="t-sub">—</p>
+        </div>
+      </div>
+      <div class="kpis" id="kpis"></div>
+      <div class="table-wrap"><table class="mtable" id="t-models"></table></div>
+      <p class="muted small">Skill = 1 − MAE(model) / MAE(persistence). Musbat qiymat — model "hozirgi qiymat o'zgarmaydi"
+        degan oddiy prognozdan yaxshi. Qamrov — kuzatuv 80% ehtimollik oralig'iga tushgan ulush (ideal 0.80).</p>
+    </section>
+
+    <section class="card half">
+      <h2>Kunlik skill</h2>
+      <p class="muted">Har bir modelning kunlik natijasi, %</p>
+      <div id="ch-daily" class="chart"></div>
+    </section>
+
+    <section class="card half">
+      <h2>Prognoz muddati bo'yicha</h2>
+      <p class="muted">Skill: 1–3, 4–6, 7–12 va 13–24 soat oldinga</p>
+      <div id="ch-lead" class="chart"></div>
+    </section>
+
+    <section class="card half">
+      <h2>Sistematik xato (bias)</h2>
+      <p class="muted">Kunlik o'rtacha: prognoz − kuzatuv, µg/m³. Musbat — oshirib bashorat qilingan</p>
+      <div id="ch-bias" class="chart"></div>
+    </section>
+
+    <section class="card half">
+      <h2>Stansiyalar bo'yicha</h2>
+      <p class="muted">Ansambl skill, %</p>
+      <div id="ch-st" class="chart"></div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>Aniqlik har 3 soatda yangilanadi: har bir prognoz o'sha soatdagi stansiya o'lchovi bilan taqqoslanadi.
+       Metrikalar WMO/CAMS verifikatsiya amaliyoti bo'yicha. Ma'lumot kam bo'lgan kunlarda natijalar tebranishi mumkin.</p>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <script src="config.js"></script>
+  <script src="accuracy.js"></script>
+</body>
+</html>
