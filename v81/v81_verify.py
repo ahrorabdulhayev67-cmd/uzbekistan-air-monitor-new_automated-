@@ -22,7 +22,7 @@ OBS_TS_OFFSET = pd.Timedelta(hours=5)            # kollektor Toshkent vaqtini "+
 DAYS = int(os.environ.get("VERIFY_DAYS", "3"))   # har safar qayta hisoblanadigan kunlar (mahalliy sana)
 BUCKET = "reports"
 GRP_EDGES, GRP_NAMES = [0, 3, 6, 12, 24], ["h1-3", "h4-6", "h7-12", "h13-24"]
-STATIONS = {107: "Toshkent markazi", 108: "Chilonzor", 733: "Uchtepa", 732: "Tashselmash", 734: "Olmazor",
+STATIONS = {107: "O'zgidromet", 108: "Chilonzor", 733: "Uchtepa", 732: "Tashselmash", 734: "Olmazor",
             730: "Safia", 731: "Green University", 720: "TTZ-4", 729: "Yangi O'zbekiston"}
 MODELS = ["Ensemble", "A-rel", "A-abs", "B", "C", "persistence"]
 MNAME = {"Ensemble": "Ansambl", "A-rel": "A · nisbiy", "A-abs": "A · mutlaq", "B": "B · box", "C": "C · TFT",

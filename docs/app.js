@@ -5,13 +5,14 @@
   const H = 3600e3, TZ = 5 * H;                     // Toshkent = UTC+5
 
   const STATIONS = {
-    107: { name: "Toshkent markazi",  lat: 41.3281, lon: 69.2945 },
+    107: { name: "O'zgidromet",  lat: 41.3281, lon: 69.2945 },
     108: { name: "Chilonzor",         lat: 41.3109, lon: 69.2407 },
     720: { name: "TTZ-4",             lat: 41.3629, lon: 69.3882 },
     729: { name: "Yangi O'zbekiston", lat: 41.3243, lon: 69.4424 },
     730: { name: "Safia",             lat: 41.3756, lon: 69.2706 },
     731: { name: "Green University",  lat: 41.3870, lon: 69.2915 },
     732: { name: "Tashselmash",       lat: 41.3060, lon: 69.3087 },
+    733: { name: "Uchtepa",           lat: 41.2960, lon: 69.1750 },
     734: { name: "Almazar",           lat: 41.3507, lon: 69.2251 },
     738: { name: "Qibray",            lat: 41.4377, lon: 69.4212 },
   };
@@ -225,7 +226,7 @@
       return `<div title="${hh(r.t)} · ${CAT[i].name}" style="background:${CAT[i].color}"></div>`;
     }).join("");
     document.getElementById("fc-sub").textContent = state.fcRun
-      ? `Toshkent markazi · kuzatuv va prognoz (80% ehtimollik oralig'i) · prognoz ${dateTZ(state.fcRun)} ${hh(state.fcRun)} da berilgan`
+      ? `O'zgidromet · kuzatuv va prognoz (80% ehtimollik oralig'i) · prognoz ${dateTZ(state.fcRun)} ${hh(state.fcRun)} da berilgan`
       : "Prognoz hozircha mavjud emas";
   }
 

@@ -5,7 +5,7 @@
   const TZ = 5 * 3600e3;
 
   const STATIONS = {
-    107: "Toshkent markazi", 108: "Chilonzor", 733: "Uchtepa", 732: "Tashselmash", 734: "Olmazor",
+    107: "O'zgidromet", 108: "Chilonzor", 733: "Uchtepa", 732: "Tashselmash", 734: "Olmazor",
     730: "Safia", 731: "Green University", 720: "TTZ-4", 729: "Yangi O'zbekiston",
   };
   const MODELS = [
