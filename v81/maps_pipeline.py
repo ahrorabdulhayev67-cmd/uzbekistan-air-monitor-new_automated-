@@ -157,6 +157,68 @@ def ratio_field(M, hist, obs, stations, pol):
     return field, info
 
 
+# ------------------------------------------------------------------ bot uchun animatsiyalar (GIF)
+LEVELS = {
+    "pm25": [0, 5, 15, 25, 37.5, 50, 75, 150, 300],
+    "pm10": [0, 20, 45, 50, 75, 100, 150, 300, 600],
+    "no2":  [0, 5, 10, 25, 50, 120, 200],
+    "dust": [0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1.5],
+}
+PAL = ["#e6f4ea", "#b7e1c1", "#7cc49a", "#f6e27f", "#f4b55f", "#ec7a52", "#d04a5c", "#9b3a8c", "#5b2a6e"]
+TITLE = {"pm25": "PM2.5, µg/m³", "pm10": "PM10, µg/m³", "no2": "NO₂, µg/m³", "dust": "Chang, AOD (550 nm)"}
+CITIES = {"Toshkent": (69.24, 41.30), "Samarqand": (66.96, 39.65), "Buxoro": (64.42, 39.77), "Nukus": (59.61, 42.46),
+          "Urganch": (60.63, 41.55), "Navoiy": (65.38, 40.10), "Qarshi": (65.79, 38.86), "Termiz": (67.28, 37.22),
+          "Jizzax": (67.84, 40.12), "Guliston": (68.78, 40.49), "Namangan": (71.67, 41.00), "Andijon": (72.34, 40.78),
+          "Farg'ona": (71.78, 40.38)}
+
+def render_gifs(M, ratios):
+    import matplotlib; matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import BoundaryNorm, ListedColormap
+    from scipy.ndimage import zoom
+    from PIL import Image
+    import cartopy.crs as ccrs, cartopy.feature as cfeature, cartopy.io.shapereader as shpreader
+    shp = shpreader.natural_earth(resolution="10m", category="cultural", name="admin_1_states_provinces")
+    regions = [r.geometry for r in shpreader.Reader(shp).records() if r.attributes.get("adm0_a3") == "UZB"]
+    lat, lon = np.asarray(M["lat"]), np.asarray(M["lon"]); flip = lat[0] > lat[-1]
+    if flip: lat = lat[::-1]
+    f = 4; la = np.linspace(lat[0], lat[-1], len(lat) * f); lo = np.linspace(lon[0], lon[-1], len(lon) * f)
+    for var in ["pm25", "pm10", "dust", "no2"]:
+        a = np.asarray(M["data"][var], dtype="float64")
+        if flip: a = a[:, ::-1, :]
+        rf = ratios.get(var, (None, {}))[0] if var in ("pm25", "pm10") else None
+        if rf is not None: a = a * (rf[::-1] if flip else rf)[None]
+        lev = LEVELS[var]; cmap = ListedColormap(PAL[:len(lev) - 1]); cmap.set_over(PAL[len(lev) - 1])
+        norm = BoundaryNorm(lev, cmap.N)
+        fig = plt.figure(figsize=(9.6, 6.2), dpi=90)
+        ax = plt.axes(projection=ccrs.Mercator(central_longitude=64.5))
+        ax.set_extent([55.5, 73.5, 37.0, 46.0], crs=ccrs.PlateCarree())
+        pm = ax.pcolormesh(lo, la, zoom(a[0], f, order=1), cmap=cmap, norm=norm, shading="auto",
+                           transform=ccrs.PlateCarree(), alpha=0.9)
+        ax.add_feature(cfeature.BORDERS.with_scale("10m"), linewidth=1.1, edgecolor="#333")
+        ax.add_geometries(regions, ccrs.PlateCarree(), facecolor="none", edgecolor="#666", linewidth=0.45)
+        for c, (x, y) in CITIES.items():
+            ax.plot(x, y, "o", ms=3, color="#1f3b5c", transform=ccrs.PlateCarree())
+            ax.text(x + 0.15, y + 0.12, c, fontsize=7.5, color="#1f3b5c", transform=ccrs.PlateCarree())
+        cb = plt.colorbar(pm, ax=ax, shrink=0.8, pad=0.02, extend="max", ticks=lev); cb.ax.tick_params(labelsize=8)
+        ttl = ax.set_title("", fontsize=11)
+        fig.text(0.01, 0.01, f"{M['source']}" + (" · stansiyalar bo'yicha tuzatilgan" if rf is not None else ""),
+                 fontsize=7, color="#555")
+        frames = []
+        for i, t in enumerate(M["times"]):
+            pm.set_array(zoom(a[i], f, order=1).ravel())
+            tl = pd.Timestamp(t) + pd.Timedelta(hours=5)
+            ttl.set_text(f"{M['model'].upper()} · {TITLE[var]} · {tl:%d.%m %H:00} (Toshkent) · +{i * STEP_H} soat")
+            fig.canvas.draw()
+            frames.append(Image.frombuffer("RGBA", fig.canvas.get_width_height(), fig.canvas.buffer_rgba()).convert("RGB")
+                          .convert("P", palette=Image.ADAPTIVE, colors=96))
+        plt.close(fig)
+        buf = io.BytesIO()
+        frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:], duration=450, loop=0, optimize=True)
+        put(f"png/{M['model']}_{var}.gif", buf.getvalue(), "image/gif")
+        log.info("%s %s: GIF %.1f MB", M["model"], var, len(buf.getvalue()) / 1e6)
+
+
 # ------------------------------------------------------------------ asosiy
 def publish(M, ratios):
     meta = {"model": M["model"], "source": M["source"], "run": M["run"], "generated": NOW.isoformat() + "Z",
@@ -175,17 +237,37 @@ def publish(M, ratios):
     log.info("%s: e'lon qilindi (%d qatlam, nisbat: %s)", M["model"], len(meta["vars"]), list(meta["ratio"]))
 
 
+def subset_times(M, keep):
+    """Modelni umumiy vaqt o'qiga keltirish (SILAM va CAMS bir xil kadrlarda ko'rsatilishi uchun)."""
+    idx = [i for i, t in enumerate(M["times"]) if t in keep]
+    M["times"] = M["times"][idx]
+    M["data"] = {k: a[idx] for k, a in M["data"].items()}
+    return M
+
+
 def main():
     obs, stations = load_obs(RATIO_DAYS + 2)
     log.info("Kuzatuv: %d qator, %d stansiya", len(obs), len(stations))
     raw = get("history/points.csv.gz")
     hist = pd.read_csv(io.BytesIO(gzip.decompress(raw)), parse_dates=["time"]) if raw else pd.DataFrame()
-    ok = 0
+    models = []
     for fetch in [fetch_silam, fetch_cams]:
         try:
-            M = fetch()
+            models.append(fetch())
         except Exception as e:
-            log.error("%s: %s", fetch.__name__, e); continue
+            log.error("%s: %s", fetch.__name__, e)
+    # Umumiy vaqt o'qi: hozirgi soatdan (3 soatlik to'r) boshlab, ikkala modelda ham bor kadrlar
+    t0 = NOW - pd.Timedelta(hours=NOW.hour % STEP_H)
+    sets = [set(t for t in M["times"] if t >= t0) for M in models]
+    common = set.intersection(*sets) if len(sets) == 2 else (sets[0] if sets else set())
+    if len(models) == 2 and len(common) < 8:
+        log.warning("Umumiy kadrlar kam (%d) — modellar alohida vaqt o'qida e'lon qilinadi", len(common))
+        common = None
+    for M in models:
+        subset_times(M, common if common is not None else set(t for t in M["times"] if t >= t0))
+        log.info("%s: %d kadr, %s → %s", M["model"], len(M["times"]), M["times"][0], M["times"][-1])
+    ok = 0
+    for M in models:
         if not stations.empty:
             hist = pd.concat([hist, sample_points(M, stations)], ignore_index=True)
             hist = hist.drop_duplicates(["time", "model", "station_id"], keep="last")

@@ -30,7 +30,8 @@
   const BUFFER_M = 2000;                               // shahar chegarasidan tashqariga ko'rsatiladigan masofa
   const levFor = (v) => (S.mode === "tashkent" ? TASH_LEVELS[v] : LEVELS[v]);                                   // qatlam shaffofligi (0–255)
 
-  const S = { mode: "silam", v: "pm25", step: 0, corr: true, playing: null, frames: [] };
+  const S = { mode: "silam", v: "pm25", step: 0, t: null, corr: true, playing: null, frames: [] };
+  const nearest = (arr, t) => { let b = 0; for (let i = 1; i < arr.length; i++) if (Math.abs(arr[i] - t) < Math.abs(arr[b] - t)) b = i; return b; };
   const cache = { silam: null, cams: null, tash: null };
   let map, ptChart, ptLngLat = null;
 
@@ -87,8 +88,21 @@
     if (useRatio && M.ratio[v]) val *= bil(M.ratio[v], 0);
     return val;
   }
+  // Ko'rsatish uchun bikubik (Catmull–Rom) interpolyatsiya: 20–40 km katakchalar "zinapoya" bo'lib ko'rinmaydi
+  const cr = (p0, p1, p2, p3, x) => p1 + 0.5 * x * (p2 - p0 + x * (2 * p0 - 5 * p1 + 4 * p2 - p3 + x * (3 * (p1 - p2) + p3 - p0)));
+  function sampleCubic(M, v, t, fy, fx, useRatio) {
+    const { ny, nx, flip } = M, a = M.data[v], off = t * ny * nx;
+    fy = Math.max(0, Math.min(ny - 1, fy)); fx = Math.max(0, Math.min(nx - 1, fx));
+    const y1 = Math.floor(fy), x1 = Math.floor(fx), wy = fy - y1, wx = fx - x1;
+    const at = (iy, ix) => { iy = Math.max(0, Math.min(ny - 1, iy)); ix = Math.max(0, Math.min(nx - 1, ix));
+                             return a[off + (flip ? ny - 1 - iy : iy) * nx + ix]; };
+    const row = (iy) => cr(at(iy, x1 - 1), at(iy, x1), at(iy, x1 + 1), at(iy, x1 + 2), wx);
+    let val = Math.max(0, cr(row(y1 - 1), row(y1), row(y1 + 1), row(y1 + 2), wy));
+    if (useRatio && M.ratio[v]) val *= sampleModel({ ...M, data: { r: M.ratio[v] } }, "r", 0, fy, fx, false);
+    return val;
+  }
   function renderModel(M, v, t) {
-    const up = 4, W = M.nx * up, Hh = M.ny * up;
+    const up = Math.max(4, Math.ceil(720 / M.nx)), W = M.nx * up, Hh = M.ny * up;
     const dlat = M.lat[1] - M.lat[0], dlon = M.lon[1] - M.lon[0];
     const latMin = M.lat[0] - dlat / 2, latMax = M.lat[M.ny - 1] + dlat / 2;
     const lonMin = M.lon[0] - dlon / 2, lonMax = M.lon[M.nx - 1] + dlon / 2;
@@ -100,7 +114,7 @@
       const lat = imerc(yT + ((r + 0.5) / Hh) * (yB - yT)), fy = (lat - M.lat[0]) / dlat;
       for (let c = 0; c < W; c++) {
         const lon = lonMin + ((c + 0.5) / W) * (lonMax - lonMin), fx = (lon - M.lon[0]) / dlon;
-        const k = classify(sampleModel(M, v, t, fy, fx, useRatio), lev), p = (r * W + c) * 4;
+        const k = classify(sampleCubic(M, v, t, fy, fx, useRatio), lev), p = (r * W + c) * 4;
         if (k < 0) continue;
         const rgb = PALRGB[k]; d[p] = rgb[0]; d[p + 1] = rgb[1]; d[p + 2] = rgb[2]; d[p + 3] = ALPHA;
       }
@@ -233,7 +247,7 @@
         const T = await loadTashkent();
         if (!T.frames.length) { banner("Toshkent qatlami uchun so'nggi kuzatuvlar topilmadi."); return; }
         S.frames = T.frames.map((f) => f.t);
-        S.step = Math.min(S.step, S.frames.length - 1);
+        S.step = S.t != null ? nearest(S.frames, S.t) : Math.min(S.step, S.frames.length - 1);
         setRaster(renderTashkent(T, S.v, S.step));
         renderStations(T, S.v, S.step);
         const f = T.frames[S.step];
@@ -243,11 +257,13 @@
         const M = await loadModel(S.mode);
         await modelVar(M, S.v);
         S.frames = M.times;
-        S.step = Math.min(S.step, S.frames.length - 1);
+        S.step = S.t != null ? nearest(S.frames, S.t) : Math.min(S.step, S.frames.length - 1);
         setRaster(renderModel(M, S.v, S.step));
-        $("maptime").textContent = `${fmtT(S.frames[S.step])} · +${Math.round((S.frames[S.step] - S.frames[0]) / H)} soat`;
+        const dh = Math.round((S.frames[S.step] - Date.now()) / H);
+        $("maptime").textContent = `${fmtT(S.frames[S.step])} · ${Math.abs(dh) <= 1 ? "hozir" : dh > 0 ? `+${dh} soat` : `${dh} soat`}`;
       }
       banner("");
+      S.t = S.frames[S.step];
       const sl = $("slider"); sl.max = S.frames.length - 1; sl.value = S.step;
       $("tlabel").textContent = `${fmtT(S.frames[0])} → ${fmtT(S.frames[S.frames.length - 1])}`;
       renderPanel();
@@ -351,7 +367,7 @@
   }
 
   // ---------- boshqaruv ----------
-  function setStep(i) { S.step = Math.max(0, Math.min(S.frames.length - 1, i)); draw(); }
+  function setStep(i) { S.step = Math.max(0, Math.min(S.frames.length - 1, i)); S.t = S.frames[S.step]; draw(); }
   function togglePlay() {
     if (S.playing) { clearInterval(S.playing); S.playing = null; $("play").textContent = "▶"; return; }
     $("play").textContent = "❚❚";
@@ -376,7 +392,7 @@
         S.step = 0;
         loadTashkent().then((T) => {
           const [w, s, e, n] = T.p.bbox; map.fitBounds([[w, s], [e, n]], { padding: 20 });
-          const now = Date.now(); S.step = Math.max(0, T.frames.findIndex((f) => f.t >= now - H)); draw();
+          S.t = Date.now() - H; draw();
         }).catch(() => draw());
         return;
       }
@@ -396,8 +412,7 @@
 
     map.on("load", async () => {
       try {
-        const M = await loadModel("silam"); const now = Date.now();
-        S.step = Math.max(0, M.times.findIndex((t) => t >= now - 1.5 * H));
+        await loadModel("silam"); S.t = Date.now();
       } catch (e) { /* draw() xabar beradi */ }
       draw();
       loadModel("cams").then((M) => modelVar(M, S.v)).catch(() => {});      // nuqta grafigi uchun oldindan
