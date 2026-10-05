@@ -7,7 +7,7 @@
 Metrikalar (WMO/CAMS verifikatsiya amaliyoti):
   MAE, bias (o'rtacha xato), RMSE, 80% oraliq qamrovi, skill = 1 − MAE_model / MAE_persistence.
 Prognoz oqlanishi: |prognoz − kuzatuv| ≤ δ_dop, δ_dop = 0.674·σ_Δ (ehtimoliy xato; Apollov va boshq., 1974),
-  σ_Δ — konsentratsiyaning h soatdagi o'zgarishining standart chetlanishi (107-stansiya tarixidan, oqlanish_delta.json).
+  σ_Δ — konsentratsiyaning h soatdagi o'zgarishining standart chetlanishi, mavsum bo'yicha (107-stansiya tarixidan, oqlanish_delta.json).
 Yig'indilar (n, sum_ae, sum_err, sum_se, n_in80, n_ok) saqlanadi — istalgan davr/stansiya bo'yicha qayta yig'ish uchun.
 """
 import os, io, json, logging
@@ -90,8 +90,15 @@ def verify(sb, now):
     V["ae"], V["se"] = V.err.abs(), V.err ** 2
     V["in80"] = ((V.y >= V.p10) & (V.y <= V.p90)).astype(int)
     if DELTA:
-        dmap = {(p_, g_): v_ for p_, gs in DELTA.items() for g_, v_ in gs.items()}
-        dd = pd.Series([dmap.get(k, np.nan) for k in zip(V.pollutant, V.lead_grp)], index=V.index)
+        SEAS = {12: "qish", 1: "qish", 2: "qish", 3: "bahor", 4: "bahor", 5: "bahor",
+                6: "yoz", 7: "yoz", 8: "yoz", 9: "kuz", 10: "kuz", 11: "kuz"}
+        if "kuz" in DELTA:            # mavsumiy chegaralar: DELTA[mavsum][modda][guruh]
+            dmap = {(se, p_, g_): v_ for se, ps in DELTA.items() for p_, gs in ps.items() for g_, v_ in gs.items()}
+            se = (V.tgt + TZ).dt.month.map(SEAS)
+            dd = pd.Series([dmap.get(k, np.nan) for k in zip(se, V.pollutant, V.lead_grp)], index=V.index)
+        else:                          # yillik chegaralar: DELTA[modda][guruh]
+            dmap = {(p_, g_): v_ for p_, gs in DELTA.items() for g_, v_ in gs.items()}
+            dd = pd.Series([dmap.get(k, np.nan) for k in zip(V.pollutant, V.lead_grp)], index=V.index)
         V["ok"] = (V.ae <= dd).astype(int)
     else:
         V["ok"] = np.nan
