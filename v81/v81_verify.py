@@ -6,9 +6,11 @@
 
 Metrikalar (WMO/CAMS verifikatsiya amaliyoti):
   MAE, bias (o'rtacha xato), RMSE, 80% oraliq qamrovi, skill = 1 − MAE_model / MAE_persistence.
-Yig'indilar (n, sum_ae, sum_err, sum_se, n_in80) saqlanadi — istalgan davr/stansiya bo'yicha qayta yig'ish uchun.
+Prognoz oqlanishi: |prognoz − kuzatuv| ≤ δ_dop, δ_dop = 0.674·σ_Δ (ehtimoliy xato; Apollov va boshq., 1974),
+  σ_Δ — konsentratsiyaning h soatdagi o'zgarishining standart chetlanishi (107-stansiya tarixidan, oqlanish_delta.json).
+Yig'indilar (n, sum_ae, sum_err, sum_se, n_in80, n_ok) saqlanadi — istalgan davr/stansiya bo'yicha qayta yig'ish uchun.
 """
-import os, io, logging
+import os, io, json, logging
 from datetime import datetime, timezone, timedelta
 import numpy as np, pandas as pd
 from supabase import create_client
@@ -30,6 +32,8 @@ MNAME = {"Ensemble": "Ansambl", "A-rel": "A · nisbiy", "A-abs": "A · mutlaq", 
 MCOL = {"Ensemble": "#e67e22", "A-rel": "#16a085", "A-abs": "#27ae60", "B": "#8e44ad", "C": "#c0392b",
         "persistence": "#7f8c8d"}
 LABEL = {"pm25": "PM2.5", "pm10": "PM10"}
+_DP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "oqlanish_delta.json")
+DELTA = json.load(open(_DP, encoding="utf-8"))["delta"] if os.path.exists(_DP) else None
 
 
 def client():
@@ -85,12 +89,21 @@ def verify(sb, now):
     V["err"] = V.p50 - V.y
     V["ae"], V["se"] = V.err.abs(), V.err ** 2
     V["in80"] = ((V.y >= V.p10) & (V.y <= V.p90)).astype(int)
+    if DELTA:
+        dmap = {(p_, g_): v_ for p_, gs in DELTA.items() for g_, v_ in gs.items()}
+        dd = pd.Series([dmap.get(k, np.nan) for k in zip(V.pollutant, V.lead_grp)], index=V.index)
+        V["ok"] = (V.ae <= dd).astype(int)
+    else:
+        V["ok"] = np.nan
 
     A = (V.groupby(["date", "station_id", "model", "pollutant", "lead_grp"])
            .agg(n=("ae", "size"), sum_ae=("ae", "sum"), sum_err=("err", "sum"), sum_se=("se", "sum"),
-                n_in80=("in80", "sum"), sum_y=("y", "sum")).reset_index())
+                n_in80=("in80", "sum"), sum_y=("y", "sum"), n_ok=("ok", "sum")).reset_index())
+    if not DELTA: A["n_ok"] = None
     A["updated_at"] = now.isoformat()
-    recs = A.astype({"station_id": int, "n": int, "n_in80": int}).round(3).to_dict("records")
+    A = A.astype({"station_id": int, "n": int, "n_in80": int})
+    if DELTA: A["n_ok"] = A.n_ok.astype(int)
+    recs = A.round(3).to_dict("records")
     for i in range(0, len(recs), 500):
         sb.table("v81_skill_daily").upsert(recs[i:i + 500],
                                            on_conflict="date,station_id,model,pollutant,lead_grp").execute()
@@ -100,11 +113,12 @@ def verify(sb, now):
 
 # ------------------------------------------------------------------ 2) PDF hisobot
 def summarize(D, keys):
-    g = D.groupby(keys)[["n", "sum_ae", "sum_err", "sum_se", "n_in80"]].sum()
+    g = D.groupby(keys)[["n", "sum_ae", "sum_err", "sum_se", "n_in80", "n_ok"]].sum(min_count=1)
     g["MAE"] = g.sum_ae / g.n
     g["bias"] = g.sum_err / g.n
     g["RMSE"] = np.sqrt(g.sum_se / g.n)
     g["qamrov"] = g.n_in80 / g.n
+    g["oqlanish"] = g.n_ok / g.n * 100
     return g
 
 
@@ -139,7 +153,7 @@ def build_pdf(D, days, end_date):
     with PdfPages(buf) as pdf:
         # --- 1-bet: sarlavha va umumiy jadval
         fig = plt.figure(figsize=A4)
-        fig.text(0.07, 0.95, "Toshkent havosi — prognoz aniqligi", fontsize=18, weight="bold")
+        fig.text(0.07, 0.95, "Toshkent havo sifati — prognoz aniqligi", fontsize=18, weight="bold")
         fig.text(0.07, 0.925, f"Davr: {start.strftime('%d.%m.%Y')} – {pd.Timestamp(end_date).strftime('%d.%m.%Y')}"
                  f" ({days} kun) · {D.station_id.nunique()} ta stansiya · V8.1", fontsize=10, color="#555")
         fig.text(0.07, 0.905, "Skill = 1 − MAE(model) / MAE(persistence). Musbat qiymat — model "
@@ -151,9 +165,10 @@ def build_pdf(D, days, end_date):
             g = add_skill(summarize(d, ["model"]), ["model"]).reindex(models)
             fig.text(0.07, y, f"{LABEL[pol]} — barcha stansiyalar, h1–h24", fontsize=12, weight="bold"); y -= 0.012
             cell = [[MNAME[m], f"{int(r.n):,}".replace(",", " "), f"{r.MAE:.1f}", f"{r.bias:+.1f}", f"{r.RMSE:.1f}",
-                     "—" if m == "persistence" else f"{r.qamrov:.2f}", "—" if m == "persistence" else f"{r.skill:+.0f}%"] for m, r in g.iterrows()]
+                     "—" if m == "persistence" else f"{r.qamrov:.2f}", "—" if pd.isna(r.oqlanish) else f"{r.oqlanish:.0f}%",
+                     "—" if m == "persistence" else f"{r.skill:+.0f}%"] for m, r in g.iterrows()]
             ax = fig.add_axes([0.07, y - 0.03 - 0.022 * len(cell), 0.86, 0.022 * (len(cell) + 1)]); ax.axis("off")
-            t = ax.table(cellText=cell, colLabels=["Model", "Juftlik", "MAE", "Bias", "RMSE", "Qamrov 80%", "Skill"],
+            t = ax.table(cellText=cell, colLabels=["Model", "Juftlik", "MAE", "Bias", "RMSE", "Qamrov", "Oqlanish", "Skill"],
                          loc="upper left", cellLoc="right", colLoc="right")
             t.auto_set_font_size(False); t.set_fontsize(9); t.scale(1, 1.35)
             for (r_, c_), c in t.get_celld().items():
@@ -162,6 +177,8 @@ def build_pdf(D, days, end_date):
                 if c_ == 0: c.set_text_props(ha="left"); c._loc = "left"
                 if r_ > 0 and cell[r_ - 1][0] == "Ansambl": c.set_text_props(weight="bold")
             y -= 0.05 + 0.022 * (len(cell) + 1) + 0.03
+        fig.text(0.07, 0.055, "Oqlanish — |prognoz − kuzatuv| ≤ 0.674·σΔ bo'lgan prognozlar ulushi (σΔ — h soatdagi o'zgarishning "
+                 "standart chetlanishi, 107-stansiya tarixi).", fontsize=7.5, color="#777")
         fig.text(0.07, 0.04, "µg/m³. Qamrov — kuzatuv p10–p90 oralig'iga tushgan ulush (ideal 0.80). "
                  f"Yaratilgan: {(pd.Timestamp.now(tz='UTC') + TZ).strftime('%d.%m.%Y %H:%M')} (Toshkent vaqti)",
                  fontsize=7.5, color="#777")
@@ -227,11 +244,11 @@ def build_pdf(D, days, end_date):
 def reports(sb, now):
     end = (now + TZ).date()
     start = end - timedelta(days=30)
-    D = fetch(sb, "v81_skill_daily", "date,station_id,model,pollutant,lead_grp,n,sum_ae,sum_err,sum_se,n_in80",
+    D = fetch(sb, "v81_skill_daily", "date,station_id,model,pollutant,lead_grp,n,sum_ae,sum_err,sum_se,n_in80,n_ok",
               lambda q: q.gte("date", str(start)), ["date", "station_id", "model", "pollutant", "lead_grp"])
     if D.empty:
         log.warning("v81_skill_daily bo'sh — PDF yasalmadi"); return
-    for c in ["n", "sum_ae", "sum_err", "sum_se", "n_in80"]: D[c] = pd.to_numeric(D[c])
+    for c in ["n", "sum_ae", "sum_err", "sum_se", "n_in80", "n_ok"]: D[c] = pd.to_numeric(D[c])
     st = sb.storage.from_(BUCKET)
     for days in [7, 30]:
         pdf = build_pdf(D, days, end)

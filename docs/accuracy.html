@@ -7,8 +7,8 @@
   <meta name="description" content="Prognoz modellarining aniqligi: kuzatuvlar bilan doimiy taqqoslash">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
-  <link href="style.css?v=20261005e" rel="stylesheet">
-  <link href="accuracy.css?v=20261005e" rel="stylesheet">
+  <link href="style.css?v=20261005f" rel="stylesheet">
+  <link href="accuracy.css?v=20261005f" rel="stylesheet">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script>try { const tg = window.Telegram && Telegram.WebApp; if (tg && tg.initData !== undefined) { tg.ready(); tg.expand(); } } catch (e) {}</script>
 </head>
@@ -74,7 +74,7 @@
       <div class="kpis" id="kpis"></div>
       <div class="table-wrap"><table class="mtable" id="t-models"></table></div>
       <p class="muted small">Skill = 1 − MAE(model) / MAE(persistence). Musbat qiymat — model "hozirgi qiymat o'zgarmaydi"
-        degan oddiy prognozdan yaxshi. Qamrov — kuzatuv 80% ehtimollik oralig'iga tushgan ulush (ideal 0.80).</p>
+        degan oddiy prognozdan yaxshi. Qamrov — kuzatuv 80% ehtimollik oralig'iga tushgan ulush (ideal 0.80). Oqlanish — xatosi ruxsat etilgan chegaradan (δ = 0.674·σ<sub>Δ</sub>, σ<sub>Δ</sub> — konsentratsiyaning shu muddatdagi o'zgarishining standart chetlanishi) oshmagan prognozlar ulushi.</p>
     </section>
 
     <section class="card half">
@@ -109,7 +109,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
   <script src="tg.js?v=20261005e"></script>
-  <script src="config.js?v=20261005e"></script>
-  <script src="accuracy.js?v=20261005e"></script>
+  <script src="config.js?v=20261005f"></script>
+  <script src="accuracy.js?v=20261005f"></script>
 </body>
 </html>

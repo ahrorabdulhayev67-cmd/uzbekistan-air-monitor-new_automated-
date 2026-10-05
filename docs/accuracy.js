@@ -53,12 +53,14 @@
     const m = new Map();
     for (const r of rows) {
       const k = keyFn(r);
-      const a = m.get(k) || { n: 0, ae: 0, err: 0, se: 0, in80: 0 };
+      const a = m.get(k) || { n: 0, ae: 0, err: 0, se: 0, in80: 0, ok: 0, nok: 0 };
       a.n += r.n; a.ae += r.sum_ae; a.err += r.sum_err; a.se += r.sum_se; a.in80 += r.n_in80;
+      if (r.n_ok != null && isFinite(r.n_ok)) { a.ok += r.n_ok; a.nok += r.n; }
       m.set(k, a);
     }
     for (const a of m.values()) {
       a.MAE = a.ae / a.n; a.bias = a.err / a.n; a.RMSE = Math.sqrt(a.se / a.n); a.cov = a.in80 / a.n;
+      a.just = a.nok ? (a.ok / a.nok) * 100 : null;
     }
     return m;
   }
@@ -71,9 +73,9 @@
   async function load() {
     const since = addDays(todayTZ(), -60);
     const rows = await q("v81_skill_daily", [
-      ["select", "date,station_id,model,pollutant,lead_grp,n,sum_ae,sum_err,sum_se,n_in80"],
+      ["select", "date,station_id,model,pollutant,lead_grp,n,sum_ae,sum_err,sum_se,n_in80,n_ok"],
       ["date", `gte.${since}`], ["order", "date.asc"]]);
-    state.rows = rows.map((r) => ({ ...r, n: +r.n, sum_ae: +r.sum_ae, sum_err: +r.sum_err, sum_se: +r.sum_se, n_in80: +r.n_in80 }));
+    state.rows = rows.map((r) => ({ ...r, n: +r.n, sum_ae: +r.sum_ae, sum_err: +r.sum_err, sum_se: +r.sum_se, n_in80: +r.n_in80, n_ok: r.n_ok == null ? null : +r.n_ok }));
   }
 
   function filtered(withStation = true) {
@@ -101,10 +103,11 @@
     const list = MODELS.filter((x) => m.has(x.id)).map((x) => ({ ...x, a: m.get(x.id), s: sk(x.id) }));
     list.sort((a, b) => (a.id === "persistence") - (b.id === "persistence") || (b.s ?? -1e9) - (a.s ?? -1e9));
     document.getElementById("t-models").innerHTML =
-      `<tr><th>Model</th><th>Juftlik</th><th>MAE</th><th>Bias</th><th>RMSE</th><th>Qamrov 80%</th><th>Skill</th></tr>` +
+      `<tr><th>Model</th><th>Juftlik</th><th>MAE</th><th>Bias</th><th>RMSE</th><th>Qamrov 80%</th><th>Oqlanish</th><th>Skill</th></tr>` +
       list.map((x) => `<tr class="${x.id === "Ensemble" ? "ens" : ""}"><td><span class="sw" style="background:${x.color}"></span>${x.name}</td>
         <td>${x.a.n.toLocaleString("ru-RU")}</td><td>${f1(x.a.MAE)}</td><td>${x.a.bias > 0 ? "+" : ""}${f1(x.a.bias)}</td>
         <td>${f1(x.a.RMSE)}</td><td>${x.id === "persistence" ? "—" : f2(x.a.cov)}</td>
+        <td>${x.a.just == null ? "—" : Math.round(x.a.just) + "%"}</td>
         <td class="${x.id === "persistence" ? "" : sgn(x.s)}">${x.id === "persistence" ? "—" : pct(x.s)}</td></tr>`).join("");
 
     const best = list.filter((x) => x.id !== "persistence")[0], ens = m.get("Ensemble");
@@ -113,7 +116,8 @@
       { l: "Ansambl skill", v: pct(sk("Ensemble")), c: sgn(sk("Ensemble")), n: "persistence'ga nisbatan" },
       { l: "Ansambl MAE", v: ens ? f1(ens.MAE) : "—", n: `µg/m³ · persistence: ${p ? f1(p.MAE) : "—"}` },
       { l: "Eng yaxshi model", v: best ? best.name.split(" (")[0] : "—", n: best ? `skill ${pct(best.s)}` : "" },
-      { l: "Juftliklar", v: ens ? ens.n.toLocaleString("ru-RU") : "0", n: "prognoz × kuzatuv" },
+      { l: "Ansambl oqlanishi", v: ens && ens.just != null ? Math.round(ens.just) + "%" : "—",
+        n: `persistence: ${p && p.just != null ? Math.round(p.just) + "%" : "—"} · ${ens ? ens.n.toLocaleString("ru-RU") : 0} juftlik` },
     ].map((k) => `<div class="kpi"><div class="k-label">${k.l}</div><div class="k-val ${k.c || ""}">${k.v}</div><div class="k-note">${k.n}</div></div>`).join("");
 
     const dates = [...new Set(rows.map((r) => r.date))].sort();
