@@ -6,7 +6,7 @@
 
 Metrikalar (WMO/CAMS verifikatsiya amaliyoti):
   MAE, bias (o'rtacha xato), RMSE, 80% oraliq qamrovi, skill = 1 − MAE_model / MAE_persistence.
-Prognoz oqlanishi: |prognoz − kuzatuv| ≤ δ_dop, δ_dop = 0.674·σ_Δ (ehtimoliy xato; Apollov va boshq., 1974),
+Prognoz oqlanishi: |ln((prognoz+1)/(kuzatuv+1))| ≤ 0.674·σ_lnΔ (ehtimoliy xato, log-masshtabda; Apollov va boshq., 1974),
   σ_Δ — konsentratsiyaning h soatdagi o'zgarishining standart chetlanishi, mavsum bo'yicha (107-stansiya tarixidan, oqlanish_delta.json).
 Yig'indilar (n, sum_ae, sum_err, sum_se, n_in80, n_ok) saqlanadi — istalgan davr/stansiya bo'yicha qayta yig'ish uchun.
 """
@@ -33,7 +33,8 @@ MCOL = {"Ensemble": "#e67e22", "A-rel": "#16a085", "A-abs": "#27ae60", "B": "#8e
         "persistence": "#7f8c8d"}
 LABEL = {"pm25": "PM2.5", "pm10": "PM10"}
 _DP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "oqlanish_delta.json")
-DELTA = json.load(open(_DP, encoding="utf-8"))["delta"] if os.path.exists(_DP) else None
+_DJ = json.load(open(_DP, encoding="utf-8")) if os.path.exists(_DP) else {}
+DELTA, DELTA_SCALE = _DJ.get("delta"), _DJ.get("scale", "abs")
 
 
 def client():
@@ -99,7 +100,11 @@ def verify(sb, now):
         else:                          # yillik chegaralar: DELTA[modda][guruh]
             dmap = {(p_, g_): v_ for p_, gs in DELTA.items() for g_, v_ in gs.items()}
             dd = pd.Series([dmap.get(k, np.nan) for k in zip(V.pollutant, V.lead_grp)], index=V.index)
-        V["ok"] = (V.ae <= dd).astype(int)
+        if DELTA_SCALE == "log":       # nisbiy xato: |ln((p50+1)/(y+1))| ≤ 0.674·σ_lnΔ
+            e = np.abs(np.log1p(V.p50.clip(lower=0)) - np.log1p(V.y.clip(lower=0)))
+            V["ok"] = (e <= dd).astype(int)
+        else:                          # absolyut xato: |p50 − y| ≤ 0.674·σ_Δ
+            V["ok"] = (V.ae <= dd).astype(int)
     else:
         V["ok"] = np.nan
 
@@ -184,8 +189,8 @@ def build_pdf(D, days, end_date):
                 if c_ == 0: c.set_text_props(ha="left"); c._loc = "left"
                 if r_ > 0 and cell[r_ - 1][0] == "Ansambl": c.set_text_props(weight="bold")
             y -= 0.05 + 0.022 * (len(cell) + 1) + 0.03
-        fig.text(0.07, 0.055, "Oqlanish — |prognoz − kuzatuv| ≤ 0.674·σΔ bo'lgan prognozlar ulushi (σΔ — h soatdagi o'zgarishning "
-                 "standart chetlanishi, 107-stansiya tarixi).", fontsize=7.5, color="#777")
+        fig.text(0.07, 0.055, "Oqlanish — |ln((prognoz+1)/(kuzatuv+1))| ≤ 0.674·σ bo'lgan prognozlar ulushi (σ — log-konsentratsiyaning h soatdagi "
+                 "o'zgarishining standart chetlanishi, mavsum bo'yicha, 107-stansiya tarixi).", fontsize=7.5, color="#777")
         fig.text(0.07, 0.04, "µg/m³. Qamrov — kuzatuv p10–p90 oralig'iga tushgan ulush (ideal 0.80). "
                  f"Yaratilgan: {(pd.Timestamp.now(tz='UTC') + TZ).strftime('%d.%m.%Y %H:%M')} (Toshkent vaqti)",
                  fontsize=7.5, color="#777")
