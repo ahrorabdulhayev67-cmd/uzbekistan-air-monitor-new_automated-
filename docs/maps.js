@@ -15,13 +15,20 @@
     co:   [0, 0.1, 0.2, 0.4, 1, 4, 7, 10],
     dust: [0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1.5],
   };
+  // Toshkent 100 m rejimi: shahar ichidagi farqni ko'rsatish uchun maydaroq shkala (pastki qismi WHO bilan bir xil)
+  const TASH_LEVELS = {
+    pm25: [0, 10, 15, 20, 25, 30, 37.5, 50, 75],
+    pm10: [0, 30, 45, 60, 75, 90, 110, 150, 250],
+  };
   const PAL = ["#e6f4ea", "#b7e1c1", "#7cc49a", "#f6e27f", "#f4b55f", "#ec7a52", "#d04a5c", "#9b3a8c", "#5b2a6e"];
   const VAR = { pm25: "PM2.5", pm10: "PM10", no2: "NO₂", so2: "SO₂", o3: "O₃", co: "CO", dust: "Chang (AOD)" };
   const MODEL_VARS = ["pm25", "pm10", "no2", "so2", "o3", "co", "dust"];
   const TASH_VARS = ["pm25", "pm10"];
   const TASH_STATIONS = [107, 108, 720, 729, 730, 731, 732, 733, 734, 738, 739];
   const UZ_BOUNDS = [[55.5, 37.0], [73.5, 46.0]];
-  const ALPHA = 200;                                   // qatlam shaffofligi (0–255)
+  const ALPHA = 200;
+  const BUFFER_M = 2000;                               // shahar chegarasidan tashqariga ko'rsatiladigan masofa
+  const levFor = (v) => (S.mode === "tashkent" ? TASH_LEVELS[v] : LEVELS[v]);                                   // qatlam shaffofligi (0–255)
 
   const S = { mode: "silam", v: "pm25", step: 0, corr: true, playing: null, frames: [] };
   const cache = { silam: null, cams: null, tash: null };
@@ -115,12 +122,21 @@
     const since = new Date(Date.now() + TZ - 26 * H).toISOString();
     const obs = await q("obs_unified", [["select", "station_id,timestamp,pm10,pm25"], ["timestamp", `gte.${since}`],
       ["station_id", `in.(${TASH_STATIONS.join(",")})`], ["limit", "5000"]]);
-    const byH = new Map();
+    const byH = new Map(), st = new Map();
     for (const o of obs) {
       const t = Math.floor((Date.parse(o.timestamp) - TZ) / H) * H;
       const b = byH.get(t) || { pm25: [], pm10: [] };
       if (o.pm25 != null) b.pm25.push(+o.pm25); if (o.pm10 != null) b.pm10.push(+o.pm10); byH.set(t, b);
+      st.set(`${o.station_id}|${t}`, { pm25: o.pm25 == null ? null : +o.pm25, pm10: o.pm10 == null ? null : +o.pm10 });
     }
+    let boundary = null, stInfo = [];
+    try { boundary = await getJSON(`${PUB}/tashkent/tashkent_boundary.geojson`); } catch (e) { console.warn("chegara", e); }
+    try {
+      const li = await q("obs_unified", [["select", "station_id,lat,lon"], ["station_id", `in.(${TASH_STATIONS.join(",")})`],
+        ["order", "timestamp.desc"], ["limit", "200"]]);
+      const seen = new Set();
+      for (const r of li) if (!seen.has(r.station_id)) { seen.add(r.station_id); stInfo.push({ id: r.station_id, lat: +r.lat, lon: +r.lon }); }
+    } catch (e) { console.warn("stansiyalar", e); }
     const med = (a) => { if (a.length < 4) return null; const s = a.slice().sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
     const frames = [...byH.entries()].sort((a, b) => a[0] - b[0])
       .map(([t, b]) => ({ t, kind: "kuzatuv", pm25: med(b.pm25), pm10: med(b.pm10) })).filter((f) => f.pm25 != null && f.pm10 != null);
@@ -136,15 +152,36 @@
         frames.push(...[...fm.values()].filter((f) => f.pm25 != null && f.pm10 != null).sort((a, b) => a.t - b.t));
       }
     } catch (e) { console.warn("prognoz", e); }
-    cache.tash = { p, Hh, W, fac, frames };
+    cache.tash = { p, Hh, W, fac, frames, st, stInfo, mask: boundary ? buildMask(p, Hh, W, boundary) : null };
     return cache.tash;
   }
+  // Shahar chegarasi + BUFFER_M: niqob (1 = ko'rsatiladi). Chegaradan uzoqda model ishonchsiz (stansiyalar yo'q).
+  function buildMask(p, Hh, W, gj) {
+    const [w, s, e, n] = p.bbox, cv = document.createElement("canvas"); cv.width = W; cv.height = Hh;
+    const ctx = cv.getContext("2d"), px = (lon, lat) => [((lon - w) / (e - w)) * W, ((n - lat) / (n - s)) * Hh];
+    const mPerPx = ((e - w) / W) * 111320 * Math.cos(((s + n) / 2) * Math.PI / 180);
+    ctx.fillStyle = ctx.strokeStyle = "#000"; ctx.lineJoin = ctx.lineCap = "round"; ctx.lineWidth = (2 * BUFFER_M) / mPerPx;
+    const polys = [];
+    for (const ft of gj.features || [gj]) {
+      const g = ft.geometry || ft;
+      if (g.type === "Polygon") polys.push(g.coordinates); else if (g.type === "MultiPolygon") polys.push(...g.coordinates);
+    }
+    for (const poly of polys) {
+      ctx.beginPath();
+      for (const ring of poly) ring.forEach(([lo, la], k) => { const [x, y] = px(lo, la); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.closePath(); ctx.fill("evenodd"); ctx.stroke();
+    }
+    const a = ctx.getImageData(0, 0, W, Hh).data, m = new Uint8Array(W * Hh);
+    for (let k = 0; k < m.length; k++) m[k] = a[k * 4 + 3] > 0 ? 1 : 0;
+    return m;
+  }
+
   function renderTashkent(T, v, i) {
-    const f = T.frames[i], level = f[v], lev = LEVELS[v], F = T.fac[v];
+    const f = T.frames[i], level = f[v], lev = TASH_LEVELS[v], F = T.fac[v];
     const cv = document.createElement("canvas"); cv.width = T.W; cv.height = T.Hh;
     const ctx = cv.getContext("2d"), img = ctx.createImageData(T.W, T.Hh), d = img.data;
     for (let k = 0; k < F.length; k++) {
-      if (F[k] <= 0) continue;
+      if (F[k] <= 0 || (T.mask && !T.mask[k])) continue;
       const c = classify(level * F[k], lev); if (c < 0) continue;
       const rgb = PALRGB[c], p = k * 4; d[p] = rgb[0]; d[p + 1] = rgb[1]; d[p + 2] = rgb[2]; d[p + 3] = ALPHA;
     }
@@ -157,6 +194,27 @@
     const c = Math.floor(((lng - w) / (e - w)) * T.W), r = Math.floor(((n - lat) / (n - s)) * T.Hh);
     return c >= 0 && c < T.W && r >= 0 && r < T.Hh ? T.fac[v][r * T.W + c] : null;
   };
+
+  // Stansiyalar: kuzatuv soatlarida o'lchangan qiymat (xaritani o'lchov bilan solishtirish uchun)
+  const stMarkers = new Map();
+  function renderStations(T, v, i) {
+    const f = T.frames[i];
+    for (const s of T.stInfo) {
+      const o = f.kind === "kuzatuv" ? T.st.get(`${s.id}|${f.t}`) : null, val = o ? o[v] : null;
+      const c = val == null ? -1 : classify(val, TASH_LEVELS[v]);
+      let mk = stMarkers.get(s.id);
+      if (!mk) {
+        const el = document.createElement("div"); el.className = "mk";
+        mk = new maplibregl.Marker({ element: el }).setLngLat([s.lon, s.lat]).addTo(map); stMarkers.set(s.id, mk);
+      }
+      const el = mk.getElement();
+      el.textContent = val == null ? "" : Math.round(val);
+      el.style.background = c < 0 ? "#9aa5b4" : PAL[c];
+      el.style.width = el.style.height = val == null ? "14px" : "34px";
+      el.title = `Stansiya ${s.id}${val == null ? "" : `: ${Math.round(val)} µg/m³ (o'lchov)`}`;
+    }
+  }
+  function hideStations() { for (const mk of stMarkers.values()) mk.remove(); stMarkers.clear(); }
 
   // ---------- xarita ----------
   function setRaster(img) {
@@ -175,9 +233,11 @@
         S.frames = T.frames.map((f) => f.t);
         S.step = Math.min(S.step, S.frames.length - 1);
         setRaster(renderTashkent(T, S.v, S.step));
+        renderStations(T, S.v, S.step);
         const f = T.frames[S.step];
         $("maptime").textContent = `${fmtT(f.t)} · ${f.kind === "prognoz" ? "prognoz" : "kuzatuv"}`;
       } else {
+        hideStations();
         const M = await loadModel(S.mode);
         await modelVar(M, S.v);
         S.frames = M.times;
@@ -218,7 +278,7 @@
       ? `Oxirgi ${rinfo.days} kun, ${rinfo.stations} stansiya. Model o'rtacha ${rinfo.median_ratio}× past ko'rsatgan.`
       : "Tuzatish uchun stansiyalar tarixi hali yig'ilmoqda (kamida 7 kun kerak).";
     // shkala
-    const lev = LEVELS[S.v], unit = S.mode === "tashkent" ? "µg/m³" : (M ? M.meta.vars[S.v].unit : "");
+    const lev = levFor(S.v), unit = S.mode === "tashkent" ? "µg/m³" : (M ? M.meta.vars[S.v].unit : "");
     const rows = [];
     for (let i = lev.length - 1; i >= 0; i--) {
       const lab = i === lev.length - 1 ? `> ${lev[i]}` : `${lev[i]} – ${lev[i + 1]}`;
@@ -226,15 +286,18 @@
     }
     $("legend").innerHTML = rows.join("");
     $("legend-note").textContent = S.v === "dust" ? "Aerozol optik qalinligi (550 nm), o'lchamsiz."
+      : S.mode === "tashkent" ? "Shahar ichidagi farqlarni ko'rsatish uchun maydaroq shkala. Doiralar — stansiyalarda o'lchangan qiymat."
       : "Chegaralar JSST (WHO) 2021 yo'riqnomasi darajalariga asoslangan. Yo'riqnoma sutkalik o'rtacha uchun, xarita esa soatlik qiymatni ko'rsatadi.";
     // ma'lumot
     let info;
     if (S.mode === "tashkent") {
       const T = cache.tash, pp = T ? T.p.pollutants[S.v] : null;
+      const nul = pp && (pp.null_rmse || pp.loo_rmse_null);
       info = `<b>Toshkent, ~100 m.</b> Shahar darajasi × fazoviy koeffitsiyent. Darajasi: o'tgan soatlarda stansiyalar medianasi, ` +
-        `kelajakda V8.1 ansambl prognozi. Koeffitsiyent katta yo'lgacha masofaga bog'liq (LUR, 11 stansiya` +
-        (pp ? `, LOO xatosi ${(100 * (1 - pp.loo_rmse / pp.loo_rmse_null)).toFixed(0)}% kam` : "") +
-        `). Stansiyalardan 5 km dan uzoqda qiymatlar taxminiy.`;
+        `kelajakda V8.1 ansambl prognozi. Koeffitsiyent o'rta ko'chalargacha (OSM secondary/tertiary) masofaga bog'liq: ` +
+        `ko'cha yonida yuqori, ~150 m da fonga tushadi (LUR, 11 stansiya` +
+        (pp && nul ? `, xatoni ${(100 * (1 - pp.loo_rmse / nul)).toFixed(0)}% kamaytiradi` : "") +
+        `). Shahar chegarasidan ${BUFFER_M / 1000} km gacha ko'rsatiladi; stansiyalardan uzoqda qiymatlar taxminiy.`;
     } else if (M) {
       info = `<b>${M.meta.source}</b><br>Ishga tushirish: ${M.meta.run} UTC.` +
         (["no2", "so2", "o3", "co"].includes(S.v)
@@ -272,7 +335,7 @@
     $("pt-title").textContent = `${VAR[S.v]} · ${lat.toFixed(3)}° N, ${lng.toFixed(3)}° E`;
     $("pt-sub").textContent = S.mode === "tashkent" ? "Toshkent qatlami: kuzatuv va prognoz" : "Ikkala model, 5 kunlik prognoz (Toshkent vaqti)";
     const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-    const lev = LEVELS[S.v];
+    const lev = LEVELS[S.v];      // WHO darajasi chizig'i (barcha rejimlarda bir xil)
     ptChart.setOption({
       grid: { left: 48, right: 16, top: 30, bottom: 28 }, legend: { top: 0, textStyle: { color: css("--muted") } },
       tooltip: { trigger: "axis", valueFormatter: (x) => (x == null ? "—" : (+x).toFixed(S.v === "co" || S.v === "dust" ? 2 : 0)) },
