@@ -1,4 +1,4 @@
-"""TashkentAQ V8.1 — shadow inference (stansiya 107). Har soatda: A, B, C, ansambl → forecasts_v81."""
+"""TashkentAQ V8.1 — operativ prognoz (Toshkent stansiyalari). Har soatda: A, B, C, ansambl → forecasts_v81."""
 import os, sys, pickle, logging, argparse, warnings
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 warnings.filterwarnings("ignore")
@@ -8,11 +8,14 @@ from supabase import create_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("v81")
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else r"C:\uzbekistan_dust\deployment\v81"
 MD = os.environ.get("V81_MODEL_DIR", os.path.join(HERE, "models"))
 mp = lambda f: os.path.join(MD, f)
 
 SID = 107
+# Prognoz faqat Toshkent shahri stansiyalari uchun (region 1726; meteo va modellar Toshkent uchun o'qitilgan).
+STATIONS = [107, 108, 733, 732, 734, 730, 731, 720, 729]
+_MET = {}                                       # meteo keshi: bir ishga tushirishda barcha stansiyalar uchun bitta
 OBS_TS_OFFSET = pd.Timedelta(hours=5)          # kollektor Toshkent vaqtini "+00:00" deb yozadi
 LAT, LON = 41.2995, 69.2401
 SRC_PTS = {"kyzylkum": (42.0, 64.0), "aralkum": (43.8, 60.2), "karakum": (39.5, 60.0)}
@@ -20,7 +23,7 @@ LAGS, SRC = [1, 2, 3, 6, 12, 24], ["kyzylkum", "aralkum", "karakum"]
 UZ_HOL = {}                                     # o'qitishda holiday=0 bo'lgan → skew bo'lmasligi uchun
 SEASON = {12:"qish",1:"qish",2:"qish",3:"bahor",4:"bahor",5:"bahor",6:"yoz",7:"yoz",8:"yoz",9:"kuz",10:"kuz",11:"kuz"}
 GRP = lambda lead: np.digitize(lead, [3.5, 6.5, 12.5])
-ENS_MEMBERS = ["A-rel", "B"]
+ENS_MEMBERS = ["A-rel", "B", "C"]             # C = C2 (time_idx'siz, 2026-10-03 qayta o'qitilgan)
 
 # ------------------------------------------------------------------ yordamchi
 def _sincos(x, p): a = 2*np.pi*x/p; return np.sin(a), np.cos(a)
@@ -47,7 +50,8 @@ def om(url, lat, lon, hourly, **kw):
     raise RuntimeError("Open-Meteo javob bermadi: " + url)
 
 # ------------------------------------------------------------------ jonli baza
-def load_live_base(sb, sid, now_utc, MQ):
+def _load_met(sb, now_utc, MQ):
+    """Stansiyaga bog'liq bo'lmagan qism: GFS, manba hududlari, CAMS, meteostansiya 51."""
     V = ["temperature_2m", "relative_humidity_2m", "dew_point_2m", "wind_speed_10m", "wind_direction_10m",
          "precipitation", "surface_pressure", "boundary_layer_height", "cloud_cover", "shortwave_radiation",
          "wind_speed_850hPa", "wind_direction_850hPa", "temperature_850hPa", "geopotential_height_850hPa"]
@@ -68,16 +72,6 @@ def load_live_base(sb, sid, now_utc, MQ):
     b = b.join(c.add_prefix("cams_"))
 
     since = (now_utc - timedelta(days=6)).isoformat()
-    pm = pd.DataFrame(sb.table("obs_unified").select("timestamp,pm10,pm25").eq("station_id", sid)
-                        .gte("timestamp", since).limit(10000).execute().data)
-    if pm.empty: raise RuntimeError("obs_unified: PM ma'lumoti yo'q")
-    pm["t"] = (pd.to_datetime(pm.timestamp, utc=True) - OBS_TS_OFFSET).dt.floor("h")
-    pm = pm.groupby("t")[["pm10", "pm25"]].mean().reindex(b.index)
-    for p in ["pm10", "pm25"]:
-        rep = pm[p].round(3).eq(pm[p].round(3).shift(1)) & pm[p].notna()
-        pm.loc[rep, p] = np.nan
-    b = b.join(pm)
-
     ms = pd.DataFrame(sb.table("meteo_stations").select("meastime,temp_c,humidity_pct,pressure_hpa,"
                       "wind_dir_deg,wind_speed_ms,precip_mm").eq("station_id", 51)
                       .gte("meastime", since).limit(10000).execute().data)
@@ -88,6 +82,24 @@ def load_live_base(sb, sid, now_utc, MQ):
     ms["obs_age_h"] = (ms.index - ms.pop("obs_time")).dt.total_seconds() / 3600
     b = b.join(ms)
     b["cal_factor"] = 1.0
+    return b
+
+def load_live_base(sb, sid, now_utc, MQ):
+    key = pd.Timestamp(now_utc).floor("h")
+    if key not in _MET:
+        _MET.clear(); _MET[key] = _load_met(sb, now_utc, MQ)
+    b = _MET[key].copy()
+    since = (now_utc - timedelta(days=6)).isoformat()
+    pm = pd.DataFrame(sb.table("obs_unified").select("timestamp,pm10,pm25").eq("station_id", sid)
+                        .gte("timestamp", since).limit(10000).execute().data)
+    if pm.empty: raise RuntimeError("obs_unified: PM ma'lumoti yo'q")
+    pm["t"] = (pd.to_datetime(pm.timestamp, utc=True) - OBS_TS_OFFSET).dt.floor("h")
+    pm = pm.groupby("t")[["pm10", "pm25"]].mean().reindex(b.index)
+    for p in ["pm10", "pm25"]:
+        rep = pm[p].round(3).eq(pm[p].round(3).shift(1)) & pm[p].notna()
+        pm.loc[rep, p] = np.nan
+    b = b.join(pm)
+
     return b
 
 # ------------------------------------------------------------------ feature'lar (o'qitish bilan bir xil)
@@ -224,22 +236,33 @@ def run(dry=False, issue=None):
         from dotenv import dotenv_values
         env = dotenv_values(os.environ.get("ENV_FILE", r"C:\uzbekistan_dust\deployment\.env"))
         url, key = env["SUPABASE_URL"], env["SUPABASE_KEY"]
-    sb = create_client(url, key)
+    sb = create_client(url.strip(), key.strip())     # secret oxiridagi bo'shliq/yangi qatorni olib tashlash
 
     now = pd.Timestamp(issue, tz="UTC") if issue else pd.Timestamp(datetime.now(timezone.utc))
     t = now.floor("h")
     MQ = pickle.load(open(mp("v81_met_qm.pkl"), "rb"))
-    live = load_live_base(sb, SID, now.to_pydatetime(), MQ)
+    M = dict(A=pickle.load(open(mp("v81_modelA.pkl"), "rb")), B=pickle.load(open(mp("v81_modelB.pkl"), "rb")),
+             BOXP=pickle.load(open(mp("v81_box_params.pkl"), "rb")))
+    out, ok, bad = [], [], []
+    for sid in STATIONS:
+        try:
+            out.append(run_station(sb, sid, t, now, MQ, M, dry))
+            ok.append(sid)
+        except Exception as e:
+            bad.append(sid); log.error("Stansiya %s: %s", sid, e)
+    log.info("Tayyor: %d stansiya %s | o'tkazib yuborildi: %s", len(ok), ok, bad)
+    if not ok: raise RuntimeError("Hech bir stansiya uchun prognoz bo'lmadi")
+    return pd.concat(out, ignore_index=True)
+
+def run_station(sb, sid, t, now, MQ, M, dry):
+    live = load_live_base(sb, sid, now.to_pydatetime(), MQ)
 
     past = live[live.index < t]
     last_pm = past.pm10.last_valid_index()
     if last_pm is None or (t - last_pm) > pd.Timedelta(hours=24):
         raise RuntimeError(f"PM10 kuzatuvi eskirgan: oxirgi {last_pm}, prognoz {t}")
-    log.info("Prognoz vaqti %s | oxirgi PM %s", t, last_pm)
-
-    A = pickle.load(open(mp("v81_modelA.pkl"), "rb"))
-    B = pickle.load(open(mp("v81_modelB.pkl"), "rb"))
-    BOXP = pickle.load(open(mp("v81_box_params.pkl"), "rb"))
+    log.info("[%s] prognoz vaqti %s | oxirgi PM %s", sid, t, last_pm)
+    A, B, BOXP = M["A"], M["B"], M["BOXP"]
     X = build_issue_rows(live, t); lead = X.lead_h.values
     miss = [c for c in A["features"] if c not in X]
     if miss: raise RuntimeError(f"Feature yetishmaydi: {miss}")
@@ -284,12 +307,12 @@ def run(dry=False, issue=None):
                 ph = f(prob["A"][i]); al = bool(prob["A"][i] >= thr["A"])
             elif pol == "pm10" and mdl == "B":
                 ph = f(prob["B"][i]); al = bool(prob["B"][i] >= thr["B"])
-            rows.append(dict(run_time=run_time, station_id=SID, model=mdl, pollutant=pol, lead_h=int(h),
+            rows.append(dict(run_time=run_time, station_id=int(sid), model=mdl, pollutant=pol, lead_h=int(h),
                              target_time=(t + pd.Timedelta(hours=int(h))).isoformat(),
                              p10=f(lo[i]), p50=f(p50[i]), p90=f(hi[i]), prob_high=ph, alert=al))
 
     ens = pd.DataFrame([r for r in rows if r["model"] == "Ensemble"])
-    log.info("Ansambl PM10 p50 (h1,6,12,24): %s",
+    log.info("[%s] ansambl PM10 p50 (h1,6,12,24): %s", sid,
              ens[ens.pollutant == "pm10"].set_index("lead_h").p50.loc[[1, 6, 12, 24]].to_dict())
     if dry:
         log.info("DRY-RUN: %d qator yozilmadi", len(rows)); return pd.DataFrame(rows)
