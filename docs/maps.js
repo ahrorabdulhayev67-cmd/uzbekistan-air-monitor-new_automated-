@@ -172,7 +172,9 @@
       ctx.closePath(); ctx.fill("evenodd"); ctx.stroke();
     }
     const a = ctx.getImageData(0, 0, W, Hh).data, m = new Uint8Array(W * Hh);
-    for (let k = 0; k < m.length; k++) m[k] = a[k * 4 + 3] > 0 ? 1 : 0;
+    let on = 0;
+    for (let k = 0; k < m.length; k++) { m[k] = a[k * 4 + 3] > 0 ? 1 : 0; on += m[k]; }
+    if (on < m.length * 0.01) { console.warn("Chegara niqobi bo'sh (koordinatalar lon/lat emasmi?) — niqobsiz ko'rsatiladi"); return null; }
     return m;
   }
 
