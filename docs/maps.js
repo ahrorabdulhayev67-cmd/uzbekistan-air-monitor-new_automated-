@@ -232,12 +232,64 @@
   }
   function hideStations() { for (const mk of stMarkers.values()) mk.remove(); stMarkers.clear(); }
 
+  // ---------- asos xarita: O'zbekiston chegarasi va o'zbekcha nomlar ----------
+  const BASE_LABEL_MINZOOM = 7.5;                     // undan pastda — o'zimizning o'zbekcha yozuvlar
+  async function setupBase() {
+    // 1) Asos xaritaning yozuvlari: kichik masshtabda yashiriladi, yaqinlashganda OSM'ning o'zbekcha nomi (bo'lsa)
+    for (const l of map.getStyle().layers) {
+      if (l.type !== "symbol") continue;
+      map.setLayerZoomRange(l.id, Math.max(l.minzoom || 0, BASE_LABEL_MINZOOM), l.maxzoom || 24);
+      if (l.layout && l.layout["text-field"]) map.setLayoutProperty(l.id, "text-field", ["coalesce", ["get", "name:uz"], ["get", "name"]]);
+    }
+    // 2) O'zbekiston: tashqi hududni xiralashtirish + chegara chizig'i
+    try {
+      const uz = await getJSON("uzbekistan.geojson");
+      const holes = [];
+      for (const f of uz.features) {
+        const g = f.geometry;
+        (g.type === "Polygon" ? [g.coordinates] : g.coordinates).forEach((poly) => holes.push(poly[0]));
+      }
+      const mask = { type: "Feature", geometry: { type: "Polygon",
+        coordinates: [[[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]], ...holes] } };
+      const firstSymbol = (map.getStyle().layers.find((l) => l.type === "symbol") || {}).id;
+      map.addSource("uz-mask", { type: "geojson", data: mask });
+      map.addSource("uz", { type: "geojson", data: uz });
+      map.addLayer({ id: "uz-mask", type: "fill", source: "uz-mask", paint: { "fill-color": "#ffffff", "fill-opacity": 0.55 } }, firstSymbol);
+      map.addLayer({ id: "uz-line-halo", type: "line", source: "uz", paint: { "line-color": "#ffffff", "line-width": 4.5, "line-opacity": 0.9 } }, firstSymbol);
+      map.addLayer({ id: "uz-line", type: "line", source: "uz", paint: { "line-color": "#1d3557", "line-width": 1.8 } }, firstSymbol);
+    } catch (e) { console.warn("O'zbekiston chegarasi", e); }
+    // 3) O'zbekcha yozuvlar: davlatlar, viloyatlar, markazlar, shaharlar
+    try {
+      map.addSource("uz-labels", { type: "geojson", data: await getJSON("uz_labels.geojson") });
+      const K = (k) => ["==", ["get", "kind"], k];
+      map.addLayer({ id: "uz-lab-region", type: "symbol", source: "uz-labels", maxzoom: BASE_LABEL_MINZOOM, filter: K("region"),
+        layout: { "text-field": ["get", "name"], "text-font": ["Noto Sans Italic"], "text-size": ["interpolate", ["linear"], ["zoom"], 4, 9, 7, 12],
+                  "text-letter-spacing": 0.04, "text-max-width": 8, "symbol-sort-key": 4 },
+        paint: { "text-color": "#5d6b7e", "text-halo-color": "#ffffff", "text-halo-width": 1.4 } });
+      map.addLayer({ id: "uz-lab-country", type: "symbol", source: "uz-labels", maxzoom: BASE_LABEL_MINZOOM, filter: ["any", K("country"), K("uz")],
+        layout: { "text-field": ["get", "name"], "text-font": ["Noto Sans Bold"], "text-transform": "uppercase", "text-letter-spacing": 0.15,
+                  "text-size": ["case", K("uz"), ["interpolate", ["linear"], ["zoom"], 4, 13, 7, 20], ["interpolate", ["linear"], ["zoom"], 4, 10, 7, 14]] },
+        paint: { "text-color": ["case", K("uz"), "#1d3557", "#8a94a3"], "text-halo-color": "#ffffff", "text-halo-width": 1.6 } });
+      map.addLayer({ id: "uz-lab-city", type: "symbol", source: "uz-labels", maxzoom: BASE_LABEL_MINZOOM,
+        filter: ["any", K("capital"), K("center"), K("city"), K("foreign")],
+        layout: { "text-field": ["get", "name"], "symbol-sort-key": ["get", "rank"],
+                  "text-font": ["case", ["any", K("capital"), K("center")], ["literal", ["Noto Sans Bold"]], ["literal", ["Noto Sans Regular"]]],
+                  "text-size": ["match", ["get", "kind"], "capital", 15, "center", 12.5, "city", 11, 11],
+                  "text-anchor": "left", "text-offset": [0.6, 0], "text-optional": true },
+        paint: { "text-color": ["case", K("foreign"), "#7a8594", "#142033"], "text-halo-color": "#ffffff", "text-halo-width": 1.5 } });
+      map.addLayer({ id: "uz-lab-dot", type: "circle", source: "uz-labels", maxzoom: BASE_LABEL_MINZOOM,
+        filter: ["any", K("capital"), K("center"), K("city"), K("foreign")],
+        paint: { "circle-radius": ["match", ["get", "kind"], "capital", 4.5, "center", 3.2, 2.4],
+                 "circle-color": ["case", K("foreign"), "#9aa5b4", "#142033"], "circle-stroke-color": "#ffffff", "circle-stroke-width": 1.2 } }, "uz-lab-city");
+    } catch (e) { console.warn("Yozuvlar", e); }
+  }
+
   // ---------- xarita ----------
   function setRaster(img) {
     const src = map.getSource("aq");
     if (src) { src.updateImage({ url: img.url, coordinates: img.coords }); return; }
     map.addSource("aq", { type: "image", url: img.url, coordinates: img.coords });
-    const firstSymbol = (map.getStyle().layers.find((l) => l.type === "symbol") || {}).id;
+    const firstSymbol = map.getLayer("uz-mask") ? "uz-mask" : (map.getStyle().layers.find((l) => l.type === "symbol") || {}).id;
     map.addLayer({ id: "aq", type: "raster", source: "aq", paint: { "raster-opacity": 1, "raster-resampling": "linear", "raster-fade-duration": 0 } }, firstSymbol);
   }
 
@@ -411,6 +463,7 @@
     });
 
     map.on("load", async () => {
+      await setupBase();
       try {
         await loadModel("silam"); S.t = Date.now();
       } catch (e) { /* draw() xabar beradi */ }
