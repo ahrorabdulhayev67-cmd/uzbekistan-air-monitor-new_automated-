@@ -26,11 +26,11 @@ BUCKET = "reports"
 GRP_EDGES, GRP_NAMES = [0, 3, 6, 12, 24], ["h1-3", "h4-6", "h7-12", "h13-24"]
 STATIONS = {107: "O'zgidromet", 108: "Chilonzor", 733: "Uchtepa", 732: "Tashselmash", 734: "Olmazor",
             730: "Safia", 731: "Green University", 720: "TTZ-4", 729: "Yangi O'zbekiston"}
-MODELS = ["Ensemble", "A-rel", "A-abs", "B", "C", "persistence"]
+MODELS = ["Ensemble", "A-rel", "A-abs", "B", "C", "A2-rel", "B2", "persistence"]
 MNAME = {"Ensemble": "Ansambl", "A-rel": "A · nisbiy", "A-abs": "A · mutlaq", "B": "B · box", "C": "C · TFT",
-         "persistence": "Persistence"}
+         "A2-rel": "A2 · nisbiy (sinov)", "B2": "B2 · box (sinov)", "persistence": "Persistence"}
 MCOL = {"Ensemble": "#e67e22", "A-rel": "#16a085", "A-abs": "#27ae60", "B": "#8e44ad", "C": "#c0392b",
-        "persistence": "#7f8c8d"}
+        "A2-rel": "#5dade2", "B2": "#d2b4de", "persistence": "#7f8c8d"}
 LABEL = {"pm25": "PM2.5", "pm10": "PM10"}
 _DP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "oqlanish_delta.json")
 _DJ = json.load(open(_DP, encoding="utf-8")) if os.path.exists(_DP) else {}
@@ -189,8 +189,8 @@ def build_pdf(D, days, end_date):
                 if c_ == 0: c.set_text_props(ha="left"); c._loc = "left"
                 if r_ > 0 and cell[r_ - 1][0] == "Ansambl": c.set_text_props(weight="bold")
             y -= 0.05 + 0.022 * (len(cell) + 1) + 0.03
-        fig.text(0.07, 0.055, "Oqlanish — |ln((prognoz+1)/(kuzatuv+1))| ≤ 0.674·σ bo'lgan prognozlar ulushi (σ — log-konsentratsiyaning h soatdagi "
-                 "o'zgarishining standart chetlanishi, mavsum bo'yicha, 107-stansiya tarixi).", fontsize=7.5, color="#777")
+        fig.text(0.07, 0.065, "Oqlanish — |ln((prognoz+1)/(kuzatuv+1))| ≤ 0.674·σ bo'lgan prognozlar ulushi (σ — log-konsentratsiyaning h soatdagi "
+                 "o'zgarishining standart chetlanishi, mavsum bo'yicha, 107-stansiya tarixi).", fontsize=7.5, color="#777", wrap=True)
         fig.text(0.07, 0.04, "µg/m³. Qamrov — kuzatuv p10–p90 oralig'iga tushgan ulush (ideal 0.80). "
                  f"Yaratilgan: {(pd.Timestamp.now(tz='UTC') + TZ).strftime('%d.%m.%Y %H:%M')} (Toshkent vaqti)",
                  fontsize=7.5, color="#777")

@@ -23,7 +23,8 @@ LAGS, SRC = [1, 2, 3, 6, 12, 24], ["kyzylkum", "aralkum", "karakum"]
 UZ_HOL = {}                                     # o'qitishda holiday=0 bo'lgan → skew bo'lmasligi uchun
 SEASON = {12:"qish",1:"qish",2:"qish",3:"bahor",4:"bahor",5:"bahor",6:"yoz",7:"yoz",8:"yoz",9:"kuz",10:"kuz",11:"kuz"}
 GRP = lambda lead: np.digitize(lead, [3.5, 6.5, 12.5])
-ENS_MEMBERS = ["A-rel", "B", "C"]             # C = C2 (time_idx'siz, 2026-10-03 qayta o'qitilgan)
+ENS_MEMBERS = ["A-rel", "B", "C"]
+SHADOW = True                                   # A2/B2: 2026-06 gacha qayta o'qitilgan, ansamblga KIRMAYDI (soya rejimi)             # C = C2 (time_idx'siz, 2026-10-03 qayta o'qitilgan)
 
 # ------------------------------------------------------------------ yordamchi
 def _sincos(x, p): a = 2*np.pi*x/p; return np.sin(a), np.cos(a)
@@ -243,6 +244,10 @@ def run(dry=False, issue=None):
     MQ = pickle.load(open(mp("v81_met_qm.pkl"), "rb"))
     M = dict(A=pickle.load(open(mp("v81_modelA.pkl"), "rb")), B=pickle.load(open(mp("v81_modelB.pkl"), "rb")),
              BOXP=pickle.load(open(mp("v81_box_params.pkl"), "rb")))
+    for k, f in [("A2", "v81_modelA2.pkl"), ("B2", "v81_modelB2.pkl")]:
+        if SHADOW and os.path.exists(mp(f)):
+            M[k] = pickle.load(open(mp(f), "rb"))
+    log.info("Soya modellari: %s", [k for k in ("A2", "B2") if k in M] or "yo'q")
     out, ok, bad = [], [], []
     for sid in STATIONS:
         try:
@@ -284,6 +289,17 @@ def run_station(sb, sid, t, now, MQ, M, dry):
         res[(pol, "B")] = tuple(q[k].predict(Xb[B["features"]]) + bx + s * c
                                for k, s in [("q10", -1), ("q50", 0), ("q90", 1)])
         res[(pol, "persistence")] = (X[f"{pol}_last"].values,) * 3
+        # Soya modellari (faqat kuzatish uchun; ansambl va ogohlantirishga ta'sir qilmaydi)
+        if "A2" in M:
+            q, cqr = M["A2"]["models"][(pol, "rel")], M["A2"]["cqr"][(pol, "rel")]
+            P = {k: np.expm1(q[k].predict(X[M["A2"]["features"]]) + np.log1p(m24)) for k in ["q10", "q50", "q90"]}
+            c = np.array([cqr[g] for g in GRP(lead)])
+            res[(pol, "A2-rel")] = (P["q10"] - c, P["q50"], P["q90"] + c)
+        if "B2" in M:
+            q, cqr = M["B2"]["models"][pol], M["B2"]["cqr"][pol]
+            c = np.array([cqr[g] for g in GRP(lead)])
+            res[(pol, "B2")] = tuple(q[k].predict(Xb[M["B2"]["features"]]) + bx + s * c
+                                    for k, s in [("q10", -1), ("q50", 0), ("q90", 1)])
     try:
         run_tft(live, t, res)
     except Exception as e:

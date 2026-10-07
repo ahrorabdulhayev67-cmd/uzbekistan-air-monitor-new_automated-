@@ -14,6 +14,8 @@
     { id: "A-abs",       name: "A · LightGBM (mutlaq)", color: "#27ae60" },
     { id: "B",           name: "B · Box-model",         color: "#8e44ad" },
     { id: "C",           name: "C · TFT",               color: "#c0392b" },
+    { id: "A2-rel",      name: "A2 · nisbiy (sinov)",   color: "#5dade2" },
+    { id: "B2",          name: "B2 · box (sinov)",      color: "#d2b4de" },
     { id: "persistence", name: "Persistence",           color: "#7f8c8d" },
   ];
   const FC = MODELS.filter((m) => m.id !== "persistence");
