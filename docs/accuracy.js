@@ -10,6 +10,7 @@
   };
   const MODELS = [
     { id: "Ensemble",    name: "Ansambl",               color: "#e67e22" },
+    { id: "Ensemble-K",  name: "Ansambl-K (tuzatilgan, sinov)", color: "#f1c40f" },
     { id: "A-rel",       name: "A · LightGBM (nisbiy)", color: "#16a085" },
     { id: "A-abs",       name: "A · LightGBM (mutlaq)", color: "#27ae60" },
     { id: "B",           name: "B · Box-model",         color: "#8e44ad" },

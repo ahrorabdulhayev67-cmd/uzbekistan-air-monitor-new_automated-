@@ -26,10 +26,10 @@ BUCKET = "reports"
 GRP_EDGES, GRP_NAMES = [0, 3, 6, 12, 24], ["h1-3", "h4-6", "h7-12", "h13-24"]
 STATIONS = {107: "O'zgidromet", 108: "Chilonzor", 733: "Uchtepa", 732: "Tashselmash", 734: "Olmazor",
             730: "Safia", 731: "Green University", 720: "TTZ-4", 729: "Yangi O'zbekiston"}
-MODELS = ["Ensemble", "A-rel", "A-abs", "B", "C", "A2-rel", "B2", "persistence"]
-MNAME = {"Ensemble": "Ansambl", "A-rel": "A · nisbiy", "A-abs": "A · mutlaq", "B": "B · box", "C": "C · TFT",
+MODELS = ["Ensemble", "Ensemble-K", "A-rel", "A-abs", "B", "C", "A2-rel", "B2", "persistence"]
+MNAME = {"Ensemble": "Ansambl", "Ensemble-K": "Ansambl-K (sinov)", "A-rel": "A · nisbiy", "A-abs": "A · mutlaq", "B": "B · box", "C": "C · TFT",
          "A2-rel": "A2 · nisbiy (sinov)", "B2": "B2 · box (sinov)", "persistence": "Persistence"}
-MCOL = {"Ensemble": "#e67e22", "A-rel": "#16a085", "A-abs": "#27ae60", "B": "#8e44ad", "C": "#c0392b",
+MCOL = {"Ensemble": "#e67e22", "Ensemble-K": "#f1c40f", "A-rel": "#16a085", "A-abs": "#27ae60", "B": "#8e44ad", "C": "#c0392b",
         "A2-rel": "#5dade2", "B2": "#d2b4de", "persistence": "#7f8c8d"}
 LABEL = {"pm25": "PM2.5", "pm10": "PM10"}
 _DP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "oqlanish_delta.json")
@@ -90,6 +90,7 @@ def verify(sb, now):
     V["err"] = V.p50 - V.y
     V["ae"], V["se"] = V.err.abs(), V.err ** 2
     V["in80"] = ((V.y >= V.p10) & (V.y <= V.p90)).astype(int)
+    V["lr"] = np.log1p(V.y.clip(lower=0)) - np.log1p(V.p50.clip(lower=0))   # onlayn tuzatish uchun log-xato
     if DELTA:
         SEAS = {12: "qish", 1: "qish", 2: "qish", 3: "bahor", 4: "bahor", 5: "bahor",
                 6: "yoz", 7: "yoz", 8: "yoz", 9: "kuz", 10: "kuz", 11: "kuz"}
@@ -110,7 +111,8 @@ def verify(sb, now):
 
     A = (V.groupby(["date", "station_id", "model", "pollutant", "lead_grp"])
            .agg(n=("ae", "size"), sum_ae=("ae", "sum"), sum_err=("err", "sum"), sum_se=("se", "sum"),
-                n_in80=("in80", "sum"), sum_y=("y", "sum"), n_ok=("ok", "sum")).reset_index())
+                n_in80=("in80", "sum"), sum_y=("y", "sum"), n_ok=("ok", "sum"),
+                sum_lr=("lr", "sum")).reset_index())
     if not DELTA: A["n_ok"] = None
     A["updated_at"] = now.isoformat()
     A = A.astype({"station_id": int, "n": int, "n_in80": int})

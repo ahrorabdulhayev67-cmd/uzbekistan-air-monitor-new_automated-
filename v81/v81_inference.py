@@ -24,7 +24,10 @@ UZ_HOL = {}                                     # o'qitishda holiday=0 bo'lgan �
 SEASON = {12:"qish",1:"qish",2:"qish",3:"bahor",4:"bahor",5:"bahor",6:"yoz",7:"yoz",8:"yoz",9:"kuz",10:"kuz",11:"kuz"}
 GRP = lambda lead: np.digitize(lead, [3.5, 6.5, 12.5])
 ENS_MEMBERS = ["A-rel", "B", "C"]
-SHADOW = True                                   # A2/B2: 2026-06 gacha qayta o'qitilgan, ansamblga KIRMAYDI (soya rejimi)             # C = C2 (time_idx'siz, 2026-10-03 qayta o'qitilgan)
+SHADOW = True                                   # A2/B2: 2026-06 gacha qayta o'qitilgan, ansamblga KIRMAYDI (soya rejimi)
+# Onlayn multiplikativ tuzatish (Ansambl-K, soya): p' = (p+1)·e^c − 1, c = oxirgi 14 kunda Ansambl log-xatosining o'rtachasi.
+# Sabab: yillararo daraja farqi (oflayn tahlil 2021–2025 kuzlari: tarqoqlik 15–28 → 2–6 punkt). Ma'lumot: v81_skill_daily.sum_lr.
+KORR_DAYS, KORR_MIN_N, KORR_CLIP = 14, 24, np.log(2.0)
 
 # ------------------------------------------------------------------ yordamchi
 def _sincos(x, p): a = 2*np.pi*x/p; return np.sin(a), np.cos(a)
@@ -230,6 +233,30 @@ def run_tft(live, t, res):
         c = np.array([CM["cqr"][target][names[g]] for g in GRP(np.arange(1, 25))])
         res[(target, "C")] = (q[:, 0] - c, q[:, 1], q[:, 2] + c)
 
+# ------------------------------------------------------------------ onlayn tuzatish (Ansambl-K)
+def korr_factors(sb, t):
+    """{(station_id, pollutant): c} — Ansambl log-xatosining oxirgi KORR_DAYS kunlik o'rtachasi.
+    Stansiyada juftlar kam bo'lsa — barcha stansiyalar bo'yicha umumiy c ("*")."""
+    d0 = ((t + pd.Timedelta(hours=5)).normalize() - pd.Timedelta(days=KORR_DAYS - 1)).date().isoformat()
+    rows, s = [], 0
+    while True:
+        r = (sb.table("v81_skill_daily").select("station_id,pollutant,n,sum_lr")
+               .eq("model", "Ensemble").gte("date", d0).range(s, s + 999).execute().data)
+        rows += r
+        if len(r) < 1000: break
+        s += 1000
+    D = pd.DataFrame(rows)
+    if D.empty or "sum_lr" not in D: return {}
+    D = D.dropna(subset=["sum_lr"])
+    out = {}
+    for pol, g in D.groupby("pollutant"):
+        n = g.n.sum()
+        if n >= KORR_MIN_N: out[("*", pol)] = float(np.clip(g.sum_lr.sum() / n, -KORR_CLIP, KORR_CLIP))
+        for sid, gs in g.groupby("station_id"):
+            if gs.n.sum() >= KORR_MIN_N:
+                out[(int(sid), pol)] = float(np.clip(gs.sum_lr.sum() / gs.n.sum(), -KORR_CLIP, KORR_CLIP))
+    return out
+
 # ------------------------------------------------------------------ asosiy
 def run(dry=False, issue=None):
     url, key = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY")
@@ -248,6 +275,12 @@ def run(dry=False, issue=None):
         if SHADOW and os.path.exists(mp(f)):
             M[k] = pickle.load(open(mp(f), "rb"))
     log.info("Soya modellari: %s", [k for k in ("A2", "B2") if k in M] or "yo'q")
+    try:
+        M["K"] = korr_factors(sb, t)
+        log.info("Ansambl-K koeffitsientlari e^c: %s",
+                 {f"{k[0]}-{k[1]}": round(float(np.exp(v)), 2) for k, v in sorted(M["K"].items(), key=str)} or "yo'q")
+    except Exception as e:
+        M["K"] = {}; log.warning("Ansambl-K: koeffitsient o'qilmadi (%s)", e)
     out, ok, bad = [], [], []
     for sid in STATIONS:
         try:
@@ -308,6 +341,9 @@ def run_station(sb, sid, t, now, MQ, M, dry):
     for pol in ["pm10", "pm25"]:
         mem = [res[(pol, m)] for m in ENS_MEMBERS if (pol, m) in res]
         res[(pol, "Ensemble")] = tuple(np.nanmean([m[i] for m in mem], axis=0) for i in range(3))
+        c = M.get("K", {}).get((int(sid), pol), M.get("K", {}).get(("*", pol)))
+        if c is not None:                           # soya: portal/bot/ogohlantirishga ta'sir qilmaydi
+            res[(pol, "Ensemble-K")] = tuple(np.expm1(np.log1p(np.clip(v, 0, None)) + c) for v in res[(pol, "Ensemble")])
 
     prob = {"A": A["clf"].predict(X[A["features"]]), "B": B["clf"].predict(Xb[B["features"]])}
     thr = {"A": A["thr"], "B": B["thr"]}
