@@ -28,6 +28,9 @@
   const UZ_BOUNDS = [[55.5, 37.0], [73.5, 46.0]];
   const ALPHA = 200;
   const BUFFER_M = 2000;                               // shahar chegarasidan tashqariga ko'rsatiladigan masofa
+  // Stansiya qoldiqlari interpolyatsiyasi: r = ln(o'lchov / (daraja × LUR)), Gauss ℓ = 3 km, shrinkage p = 0.5.
+  // Leave-one-out (11 stansiya, 2026-07…10): MAE LUR'ga nisbatan −8% (PM2.5 6.14→5.66, PM10 26.7→24.4).
+  const RES_L_KM = 3, RES_PRIOR = 0.5, MIN_OBS = 1;    // MIN_OBS: <1 µg/m³ — sensor noli, hisobga olinmaydi
   const levFor = (v) => (S.mode === "tashkent" ? TASH_LEVELS[v] : LEVELS[v]);                                   // qatlam shaffofligi (0–255)
 
   const S = { mode: "silam", v: "pm25", step: 0, t: null, corr: true, playing: null, frames: [] };
@@ -140,8 +143,9 @@
     for (const o of obs) {
       const t = Math.floor((Date.parse(o.timestamp) - TZ) / H) * H;
       const b = byH.get(t) || { pm25: [], pm10: [] };
-      if (o.pm25 != null) b.pm25.push(+o.pm25); if (o.pm10 != null) b.pm10.push(+o.pm10); byH.set(t, b);
-      st.set(`${o.station_id}|${t}`, { pm25: o.pm25 == null ? null : +o.pm25, pm10: o.pm10 == null ? null : +o.pm10 });
+      const v25 = o.pm25 != null && +o.pm25 >= MIN_OBS ? +o.pm25 : null, v10 = o.pm10 != null && +o.pm10 >= MIN_OBS ? +o.pm10 : null;
+      if (v25 != null) b.pm25.push(v25); if (v10 != null) b.pm10.push(v10); byH.set(t, b);
+      st.set(`${o.station_id}|${t}`, { pm25: v25, pm10: v10 });
     }
     let boundary = null, stInfo = [];
     try { boundary = await getJSON(`${PUB}/tashkent/tashkent_boundary.geojson`); } catch (e) { console.warn("chegara", e); }
@@ -154,19 +158,44 @@
     const med = (a) => { if (a.length < 4) return null; const s = a.slice().sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
     const frames = [...byH.entries()].sort((a, b) => a[0] - b[0])
       .map(([t, b]) => ({ t, kind: "kuzatuv", pm25: med(b.pm25), pm10: med(b.pm10) })).filter((f) => f.pm25 != null && f.pm10 != null);
+    const stf = new Map();                              // stansiya prognozlari: `${id}|${t}` → {pm25, pm10}
     try {
       const last = await q("forecasts_v81", [["select", "run_time"], ["station_id", `eq.${C.FORECAST_STATION}`], ["model", "eq.Ensemble"],
         ["order", "run_time.desc"], ["limit", "1"]]);
       if (last.length) {
-        const fc = await q("forecasts_v81", [["select", "pollutant,target_time,p50"], ["run_time", `eq.${last[0].run_time}`],
-          ["station_id", `eq.${C.FORECAST_STATION}`], ["model", "eq.Ensemble"], ["order", "lead_h.asc"]]);
-        const tmax = frames.length ? frames[frames.length - 1].t : 0, fm = new Map();
-        for (const r of fc) { const t = Date.parse(r.target_time); if (t <= tmax) continue;
-          const f = fm.get(t) || { t, kind: "prognoz" }; f[r.pollutant] = r.p50 / p.pollutants[r.pollutant].F107; fm.set(t, f); }
-        frames.push(...[...fm.values()].filter((f) => f.pm25 != null && f.pm10 != null).sort((a, b) => a.t - b.t));
+        // Prognoz darajasi kuzatuv bilan bir xil ta'rifda: stansiyalar prognozlarining medianasi (≥4 stansiya)
+        const fc = await q("forecasts_v81", [["select", "station_id,pollutant,target_time,p50"], ["run_time", `eq.${last[0].run_time}`],
+          ["station_id", `in.(${TASH_STATIONS.join(",")})`], ["model", "eq.Ensemble"], ["order", "lead_h.asc"], ["limit", "1000"]]);
+        const tmax = frames.length ? frames[frames.length - 1].t : 0, by = new Map();
+        for (const r of fc) {
+          const t = Date.parse(r.target_time); if (t <= tmax || r.p50 == null) continue;
+          const b = by.get(t) || { pm25: [], pm10: [], f107: {} }; b[r.pollutant].push(+r.p50);
+          if (r.station_id === C.FORECAST_STATION) b.f107[r.pollutant] = +r.p50;
+          by.set(t, b);
+          const k = `${r.station_id}|${t}`, o = stf.get(k) || {}; o[r.pollutant] = +r.p50; stf.set(k, o);
+        }
+        const fr = [...by.entries()].sort((a, b) => a[0] - b[0]).map(([t, b]) => {
+          const f = { t, kind: "prognoz" };
+          for (const v of TASH_VARS) f[v] = med(b[v]) ?? (b.f107[v] != null ? b.f107[v] / p.pollutants[v].F107 : null);   // zaxira: eski usul (107 / F107)
+          return f;
+        });
+        frames.push(...fr.filter((f) => f.pm25 != null && f.pm10 != null));
       }
     } catch (e) { console.warn("prognoz", e); }
-    cache.tash = { p, Hh, W, fac, frames, st, stInfo, mask: boundary ? buildMask(p, Hh, W, boundary) : null };
+    const T = { p, Hh, W, fac, frames, st, stf, stInfo, mask: boundary ? buildMask(p, Hh, W, boundary) : null };
+    // Har bir kadr uchun stansiya qoldiqlari (log): kuzatuvda — o'lchovdan, prognozda — stansiyaning o'z prognozidan
+    for (const f of frames) {
+      f.res = {};
+      for (const v of TASH_VARS) {
+        const R = new Map(), src = f.kind === "kuzatuv" ? st : stf;
+        for (const s of stInfo) {
+          const o = src.get(`${s.id}|${f.t}`), val = o ? o[v] : null, F = tashFactorAt(T, v, s.lon, s.lat);
+          if (val != null && val >= MIN_OBS && F > 0 && f[v] > 0) R.set(s.id, Math.log(val / (f[v] * F)));
+        }
+        f.res[v] = R;
+      }
+    }
+    cache.tash = T;
     return cache.tash;
   }
   // Shahar chegarasi + BUFFER_M: niqob (1 = ko'rsatiladi). Chegaradan uzoqda model ishonchsiz (stansiyalar yo'q).
@@ -192,13 +221,46 @@
     return m;
   }
 
+  // Gauss og'irliklari har stansiya uchun bir marta hisoblanadi (ajraladigan: exp(−dx²/2ℓ²)·exp(−dy²/2ℓ²))
+  const KX = (lat) => 111.32 * Math.cos((lat * Math.PI) / 180), KY = 110.57, INV2L2 = 1 / (2 * RES_L_KM * RES_L_KM);
+  function stationWeights(T) {
+    if (T.wgt) return T.wgt;
+    const [w, s, e, n] = T.p.bbox, kx = KX((s + n) / 2);
+    T.wgt = new Map();
+    for (const st of T.stInfo) {
+      const gx = new Float32Array(T.W), a = new Float32Array(T.W * T.Hh);
+      for (let c = 0; c < T.W; c++) { const dx = (w + ((c + 0.5) / T.W) * (e - w) - st.lon) * kx; gx[c] = Math.exp(-dx * dx * INV2L2); }
+      for (let r = 0; r < T.Hh; r++) {
+        const dy = (n - ((r + 0.5) / T.Hh) * (n - s) - st.lat) * KY, gy = Math.exp(-dy * dy * INV2L2), o = r * T.W;
+        for (let c = 0; c < T.W; c++) a[o + c] = gy * gx[c];
+      }
+      T.wgt.set(st.id, a);
+    }
+    return T.wgt;
+  }
+  // Nuqtadagi qoldiq (nuqta grafigi uchun): xuddi shu formula
+  function resAt(T, f, v, lng, lat) {
+    const R = f.res && f.res[v]; if (!R || !R.size) return 0;
+    const kx = KX(lat); let num = 0, den = RES_PRIOR;
+    for (const s of T.stInfo) {
+      const r = R.get(s.id); if (r == null) continue;
+      const dx = (lng - s.lon) * kx, dy = (lat - s.lat) * KY, w = Math.exp(-(dx * dx + dy * dy) * INV2L2);
+      num += w * r; den += w;
+    }
+    return num / den;
+  }
+
   function renderTashkent(T, v, i) {
     const f = T.frames[i], level = f[v], lev = TASH_LEVELS[v], F = T.fac[v];
     const cv = document.createElement("canvas"); cv.width = T.W; cv.height = T.Hh;
     const ctx = cv.getContext("2d"), img = ctx.createImageData(T.W, T.Hh), d = img.data;
+    const Wg = stationWeights(T), R = (f.res && f.res[v]) || new Map();
+    const ids = [...R.keys()].filter((id) => Wg.has(id)), ws = ids.map((id) => Wg.get(id)), rs = ids.map((id) => R.get(id));
     for (let k = 0; k < F.length; k++) {
       if (F[k] <= 0 || (T.mask && !T.mask[k])) continue;
-      const c = classify(level * F[k], lev); if (c < 0) continue;
+      let num = 0, den = RES_PRIOR;
+      for (let j = 0; j < ws.length; j++) { const wj = ws[j][k]; num += wj * rs[j]; den += wj; }
+      const c = classify(level * F[k] * Math.exp(num / den), lev); if (c < 0) continue;
       const rgb = PALRGB[c], p = k * 4; d[p] = rgb[0]; d[p + 1] = rgb[1]; d[p + 2] = rgb[2]; d[p + 3] = ALPHA;
     }
     ctx.putImageData(img, 0, 0);
@@ -216,7 +278,7 @@
   function renderStations(T, v, i) {
     const f = T.frames[i];
     for (const s of T.stInfo) {
-      const o = f.kind === "kuzatuv" ? T.st.get(`${s.id}|${f.t}`) : null, val = o ? o[v] : null;
+      const fc = f.kind !== "kuzatuv", o = (fc ? T.stf : T.st).get(`${s.id}|${f.t}`), val = o && o[v] != null ? o[v] : null;
       const c = val == null ? -1 : classify(val, TASH_LEVELS[v]);
       let mk = stMarkers.get(s.id);
       if (!mk) {
@@ -227,7 +289,9 @@
       el.textContent = val == null ? "" : Math.round(val);
       el.style.background = c < 0 ? "#9aa5b4" : PAL[c];
       el.style.width = el.style.height = val == null ? "14px" : "34px";
-      el.title = `Stansiya ${s.id}${val == null ? "" : `: ${Math.round(val)} µg/m³ (o'lchov)`}`;
+      el.style.outline = fc && val != null ? "2px dashed rgba(0,0,0,.45)" : "";
+      el.style.opacity = fc && val != null ? "0.85" : "";
+      el.title = `Stansiya ${s.id}${val == null ? "" : `: ${Math.round(val)} µg/m³ (${fc ? "prognoz" : "o'lchov"})`}`;
     }
   }
   function hideStations() { for (const mk of stMarkers.values()) mk.remove(); stMarkers.clear(); }
@@ -356,15 +420,17 @@
     }
     $("legend").innerHTML = rows.join("");
     $("legend-note").textContent = S.v === "dust" ? "Aerozol optik qalinligi (550 nm), o'lchamsiz."
-      : S.mode === "tashkent" ? "Shahar ichidagi farqlarni ko'rsatish uchun maydaroq shkala. Doiralar — stansiyalarda o'lchangan qiymat."
+      : S.mode === "tashkent" ? "Shahar ichidagi farqlarni ko'rsatish uchun maydaroq shkala. Doiralar — stansiyalarda o'lchangan qiymat (prognoz soatlarida shtrixli — stansiya prognozi)."
       : "Chegaralar JSST (WHO) 2021 yo'riqnomasi darajalariga asoslangan. Yo'riqnoma sutkalik o'rtacha uchun, xarita esa soatlik qiymatni ko'rsatadi.";
     // ma'lumot
     let info;
     if (S.mode === "tashkent") {
       const T = cache.tash, pp = T ? T.p.pollutants[S.v] : null;
       const nul = pp && (pp.null_rmse || pp.loo_rmse_null);
-      info = `<b>Toshkent, ~100 m.</b> Shahar darajasi × fazoviy koeffitsiyent. Darajasi: o'tgan soatlarda stansiyalar medianasi, ` +
-        `kelajakda V8.1 ansambl prognozi. Koeffitsiyent o'rta ko'chalargacha (OSM secondary/tertiary) masofaga bog'liq: ` +
+      info = `<b>Toshkent, ~100 m.</b> Shahar darajasi × ko'cha koeffitsiyenti × stansiya tuzatmasi. Darajasi: o'tgan soatlarda ` +
+        `stansiyalar o'lchovlarining medianasi, kelajakda stansiyalar bo'yicha V8.1 ansambl prognozlarining medianasi. ` +
+        `Stansiya tuzatmasi: har bir stansiyadagi o'lchov (prognoz) va model farqi ~${RES_L_KM} km radiusda yoyiladi — ` +
+        `xarita stansiyalar yonida ularning qiymatiga yaqinlashadi. Koeffitsiyent o'rta ko'chalargacha (OSM secondary/tertiary) masofaga bog'liq: ` +
         `ko'cha yonida yuqori, ~150 m da fonga tushadi (LUR, 11 stansiya` +
         (pp && nul ? `, xatoni ${(100 * (1 - pp.loo_rmse / nul)).toFixed(0)}% kamaytiradi` : "") +
         `). Shahar chegarasidan ${BUFFER_M / 1000} km gacha ko'rsatiladi; stansiyalardan uzoqda qiymatlar taxminiy.`;
@@ -387,7 +453,7 @@
       const T = cache.tash, f = T && tashFactorAt(T, S.v, lng, lat);
       if (f == null) return;
       series.push({ name: `${VAR[S.v]} (Toshkent qatlami)`, type: "line", showSymbol: false, lineStyle: { width: 2.5 },
-        data: T.frames.map((fr) => [fr.t, fr[S.v] * f]) });
+        data: T.frames.map((fr) => [fr.t, fr[S.v] * f * Math.exp(resAt(T, fr, S.v, lng, lat))]) });
     } else {
       for (const m of ["silam", "cams"]) {
         const M = cache[m]; if (!M || !M.data[S.v]) continue;
