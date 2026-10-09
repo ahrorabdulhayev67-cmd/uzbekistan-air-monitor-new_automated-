@@ -6,7 +6,6 @@
   if (!C || !card) return;
   const NAMES = { 107: "O'zgidromet", 108: "Chilonzor", 720: "TTZ-4", 729: "Yangi O'zbekiston", 730: "Safia",
                   731: "Green University", 732: "Tashselmash", 733: "Uchtepa", 734: "Olmazor" };
-  const ICON = { mix: "🌫", wind: "💨", rain: "🌧", time: "🕗", reg: "🗺", dust: "🏜", heat: "🔥", now: "📈" };
   const CATCOL = { "yaxshi": "#2ecc71", "qoniqarli": "#f1c40f", "o'rtacha ifloslangan": "#e67e22",
                    "yuqori ifloslangan": "#e74c3c", "qoniqarsiz, xavfli": "#8e44ad" };
   const TZ = 5 * 3600e3;
@@ -32,10 +31,8 @@
 
   function block(e, title) {
     if (!e) return "";
-    const chips = (e.factors || []).map((f) => `<span class="ex-chip">${ICON[f.key] || "•"} ${esc(f.text.split(" — ")[0])}</span>`).join("");
     return `<div class="ex-block" style="--exc:${CATCOL[e.category] || "#9aa5b4"}">
-      <div class="ex-h">${title}</div><p class="ex-t">${esc(e.text_uz)}</p>
-      ${chips ? `<div class="ex-chips">${chips}</div>` : ""}</div>`;
+      <div class="ex-h">${title}</div><p class="ex-t">${esc(e.text_uz)}</p></div>`;
   }
 
   async function load() {

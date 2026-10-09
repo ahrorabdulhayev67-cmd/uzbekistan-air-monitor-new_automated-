@@ -80,26 +80,26 @@ def _reasons(row, S, high, hl, dust):
         if pos != high: continue
         if g == "Turg'unlik":
             if pos and blh < 600:
-                add("mix", g, val, "havo turg'un — aralashish qatlami juda past (50 m dan kam)" if blh < 50
-                    else f"havo turg'un — aralashish qatlami atigi ~{blh:.0f} m")
+                add("mix", g, val, "havoning kuchli turg'unligi (aralashish qatlami 50 m dan past)" if blh < 50
+                    else f"havoning turg'unligi (aralashish qatlami atigi ~{blh:.0f} m)")
             elif not pos and blh > 1200:
-                add("mix", g, val, f"havo yaxshi aralashadi (aralashish qatlami ~{blh / 1000:.1f} km)")
+                add("mix", g, val, f"havoning yaxshi aralashishi (aralashish qatlami ~{blh / 1000:.1f} km)")
         elif g == "Shamol":
-            if pos and wind <= 1.5: add("wind", g, val, "shamol yo'q")
-            elif not pos and wind >= 3: add("wind", g, val, f"shamol ({wind:.0f} m/s) ifloslanishni tarqatadi")
+            if pos and wind <= 1.5: add("wind", g, val, "shamolning yo'qligi")
+            elif not pos and wind >= 3: add("wind", g, val, f"shamol ({wind:.0f} m/s)")
         elif g == "Yog'in" and not pos and prc > 0.1:
-            add("rain", g, val, "yog'in havoni tozalaydi")
+            add("rain", g, val, "yog'in")
         elif g == "Sutka vaqti":
-            if pos and hl >= 18: add("time", g, val, "kechqurun chiqindilar yer yuzasida to'planadi")
-            elif pos and hl <= 5: add("time", g, val, "tunda chiqindilar yer yuzasida to'planadi")
+            if pos and hl >= 18: add("time", g, val, "kechki soatlarda chiqindilarning yer yuzasida to'planishi")
+            elif pos and hl <= 5: add("time", g, val, "tungi soatlarda chiqindilarning yer yuzasida to'planishi")
             elif pos and 6 <= hl <= 10: add("time", g, val, "ertalabki tirbandlik va tunda to'plangan ifloslanish")
-            elif not pos and 11 <= hl <= 17: add("mix", g, val, "kunduzi havo yaxshi aralashadi")
+            elif not pos and 11 <= hl <= 17: add("mix", g, val, "kunduzgi kuchli aralashish")
         elif g == "Mintaqaviy fon":
-            add("reg", g, val, "atrofdagi hududlarda ham havo ifloslangan" if pos else "mintaqada havo toza")
+            add("reg", g, val, "atrof hududlardagi yuqori ifloslanish foni" if pos else "mintaqadagi past ifloslanish foni")
         elif g == "Tashqi chang" and pos and (cdust > 30 or gust > 12 or dust):
-            add("dust", g, val, "cho'l hududlaridan chang kelmoqda")
+            add("dust", g, val, "cho'l hududlaridan kelayotgan chang")
         elif g == "Harorat" and pos and tmp < 10:
-            add("heat", g, val, "sovuq havo — isitish chiqindilari ko'payadi")
+            add("heat", g, val, "sovuq havo sababli isitish chiqindilarining ko'payishi")
     return out
 
 
@@ -119,16 +119,25 @@ def build_explanations(sid, t, X, A, res, lead):
         high = e25[i] > C["pm25"][1][i]
         R = _reasons(X.iloc[i], S, high, hl, dust)
         if high and len(R) < 2 and np.isfinite(n25) and n25 > 35:
-            R.append({"key": "now", "group": "Hozirgi ifloslanish", "shap": 0.0, "text": "hozirgi ifloslanish tez tarqalmaydi"})
-        head = "Asosiy omillar: " if high else "Ifloslanishni kamaytiruvchi omillar: "
-        return hl, R, (head + "; ".join(r["text"] for r in R) + ".") if R else ""
+            R.append({"key": "now", "group": "Hozirgi ifloslanish", "shap": 0.0, "text": "hozirgi yuqori ifloslanishning sekin tarqalishi"})
+        return hl, R, R
+
+    def sentence(R, future):
+        """Tabiiy jumla: 'Bunga X, Y va Z sabab bo'lmoqda.' / '... yordam bermoqda.'"""
+        if not R: return ""
+        t = [r["text"] for r in R]
+        lst = t[0] if len(t) == 1 else ", ".join(t[:-1]) + " va " + t[-1]
+        high = R[0]["shap"] > 0 or R[0]["key"] == "now"
+        verb = ("sabab bo'ladi" if future else "sabab bo'lmoqda") if high else ("yordam beradi" if future else "yordam bermoqda")
+        return f"Bunga {lst} {verb}."
 
     warn = "Chang hodisalarida prognoz aniqligi past — kuzatuvlarni kuzatib boring." if dust else ""
     out = []
 
     # --- now ---
     i = int(np.argmin(np.abs(lead - NOW_H)))
-    hl, R, why = reasons_at(i)
+    hl, R, _ = reasons_at(i)
+    why = sentence(R, future=False)
     if np.isfinite(n25):
         l1 = f"Hozir: PM2.5 — {n25:.0f}" + (f", PM10 — {n10:.0f}" if np.isfinite(n10) else "") + f" µg/m³ ({cat(n25, n10)})."
         if dust: l1 += " Asosan yirik zarrachalar — havoda chang bor."
@@ -144,7 +153,8 @@ def build_explanations(sid, t, X, A, res, lead):
     # --- peak ---
     w = np.where((lead >= PEAK_FROM) & (lead <= PEAK_H))[0]
     i = int(w[np.argmax(e25[w])])
-    hl, R, why = reasons_at(i)
+    hl, R, _ = reasons_at(i)
+    why = sentence(R, future=True)
     c = cat(e25[i], e10[i])
     d_now, d_t = (t + pd.Timedelta(hours=5)).date(), (t + pd.Timedelta(hours=int(lead[i]) + 5)).date()
     when = (f"bugun soat {hl:02d}:00 da" if d_t == d_now else
