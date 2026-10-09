@@ -23,11 +23,14 @@ LAGS, SRC = [1, 2, 3, 6, 12, 24], ["kyzylkum", "aralkum", "karakum"]
 UZ_HOL = {}                                     # o'qitishda holiday=0 bo'lgan → skew bo'lmasligi uchun
 SEASON = {12:"qish",1:"qish",2:"qish",3:"bahor",4:"bahor",5:"bahor",6:"yoz",7:"yoz",8:"yoz",9:"kuz",10:"kuz",11:"kuz"}
 GRP = lambda lead: np.digitize(lead, [3.5, 6.5, 12.5])
-ENS_MEMBERS = ["A-rel", "B", "C"]
+ENS_MEMBERS = ["A-abs", "B", "C"]             # 2026-10-09: A-rel → A-abs (jonli 3–9.10: skill PM2.5 16→19%, PM10 15→18%)
 SHADOW = True                                   # A2/B2: 2026-06 gacha qayta o'qitilgan, ansamblga KIRMAYDI (soya rejimi)
 # Onlayn multiplikativ tuzatish (Ansambl-K, soya): p' = (p+1)·e^c − 1, c = oxirgi 14 kunda Ansambl log-xatosining o'rtachasi.
 # Sabab: yillararo daraja farqi (oflayn tahlil 2021–2025 kuzlari: tarqoqlik 15–28 → 2–6 punkt). Ma'lumot: v81_skill_daily.sum_lr.
 KORR_DAYS, KORR_MIN_N, KORR_CLIP = 14, 24, np.log(2.0)
+KORR_D0 = 5                                     # shrinkage: 5 kunlik ma'lumotda tuzatish yarim kuchda
+KGRP = ["h1-3", "h4-6", "h7-12", "h13-24"]
+KLEADS = {"h1-3": 3, "h4-6": 3, "h7-12": 6, "h13-24": 12}   # guruhdagi muddatlar soni (soatiga juftliklar)
 
 # ------------------------------------------------------------------ yordamchi
 def _sincos(x, p): a = 2*np.pi*x/p; return np.sin(a), np.cos(a)
@@ -235,12 +238,13 @@ def run_tft(live, t, res):
 
 # ------------------------------------------------------------------ onlayn tuzatish (Ansambl-K)
 def korr_factors(sb, t):
-    """{(station_id, pollutant): c} — Ansambl log-xatosining oxirgi KORR_DAYS kunlik o'rtachasi.
-    Stansiyada juftlar kam bo'lsa — barcha stansiyalar bo'yicha umumiy c ("*")."""
+    """{(station_id, pollutant, lead_grp): c} — Ansambl log-xatosining oxirgi KORR_DAYS kunlik o'rtachasi,
+    muddat guruhi bo'yicha alohida, shrinkage bilan: c = Σlr / (n + n0), n0 = KORR_D0 kunlik juftliklar soni.
+    Ma'lumot KORR_D0 kun bo'lganda tuzatish yarim kuchda, ko'p bo'lganda — to'liq. Stansiyada juft yo'q bo'lsa — "*" (umumiy)."""
     d0 = ((t + pd.Timedelta(hours=5)).normalize() - pd.Timedelta(days=KORR_DAYS - 1)).date().isoformat()
     rows, s = [], 0
     while True:
-        r = (sb.table("v81_skill_daily").select("station_id,pollutant,n,sum_lr")
+        r = (sb.table("v81_skill_daily").select("station_id,pollutant,lead_grp,n,sum_lr")
                .eq("model", "Ensemble").gte("date", d0).range(s, s + 999).execute().data)
         rows += r
         if len(r) < 1000: break
@@ -249,12 +253,12 @@ def korr_factors(sb, t):
     if D.empty or "sum_lr" not in D: return {}
     D = D.dropna(subset=["sum_lr"])
     out = {}
-    for pol, g in D.groupby("pollutant"):
-        n = g.n.sum()
-        if n >= KORR_MIN_N: out[("*", pol)] = float(np.clip(g.sum_lr.sum() / n, -KORR_CLIP, KORR_CLIP))
+    for (pol, lg), g in D.groupby(["pollutant", "lead_grp"]):
+        n0 = KORR_D0 * 24 * KLEADS.get(lg, 6)
+        ns = max(g.station_id.nunique(), 1)       # umumiy: har stansiyaga bir xil n0
+        out[("*", pol, lg)] = float(np.clip(g.sum_lr.sum() / (g.n.sum() + n0 * ns), -KORR_CLIP, KORR_CLIP))
         for sid, gs in g.groupby("station_id"):
-            if gs.n.sum() >= KORR_MIN_N:
-                out[(int(sid), pol)] = float(np.clip(gs.sum_lr.sum() / gs.n.sum(), -KORR_CLIP, KORR_CLIP))
+            out[(int(sid), pol, lg)] = float(np.clip(gs.sum_lr.sum() / (gs.n.sum() + n0), -KORR_CLIP, KORR_CLIP))
     return out
 
 # ------------------------------------------------------------------ asosiy
@@ -278,7 +282,7 @@ def run(dry=False, issue=None):
     try:
         M["K"] = korr_factors(sb, t)
         log.info("Ansambl-K koeffitsientlari e^c: %s",
-                 {f"{k[0]}-{k[1]}": round(float(np.exp(v)), 2) for k, v in sorted(M["K"].items(), key=str)} or "yo'q")
+                 {"-".join(map(str, k)): round(float(np.exp(v)), 2) for k, v in sorted(M["K"].items(), key=str) if k[0] == "*"} or "yo'q")
     except Exception as e:
         M["K"] = {}; log.warning("Ansambl-K: koeffitsient o'qilmadi (%s)", e)
     out, ok, bad = [], [], []
@@ -341,9 +345,11 @@ def run_station(sb, sid, t, now, MQ, M, dry):
     for pol in ["pm10", "pm25"]:
         mem = [res[(pol, m)] for m in ENS_MEMBERS if (pol, m) in res]
         res[(pol, "Ensemble")] = tuple(np.nanmean([m[i] for m in mem], axis=0) for i in range(3))
-        c = M.get("K", {}).get((int(sid), pol), M.get("K", {}).get(("*", pol)))
-        if c is not None:                           # soya: portal/bot/ogohlantirishga ta'sir qilmaydi
-            res[(pol, "Ensemble-K")] = tuple(np.expm1(np.log1p(np.clip(v, 0, None)) + c) for v in res[(pol, "Ensemble")])
+        K = M.get("K", {})
+        cg = [K.get((int(sid), pol, g), K.get(("*", pol, g))) for g in KGRP]
+        if any(c is not None for c in cg):          # soya: portal/bot/ogohlantirishga ta'sir qilmaydi
+            cv = np.array([cg[g] or 0.0 for g in GRP(lead)])
+            res[(pol, "Ensemble-K")] = tuple(np.expm1(np.log1p(np.clip(v, 0, None)) + cv) for v in res[(pol, "Ensemble")])
 
     prob = {"A": A["clf"].predict(X[A["features"]]), "B": B["clf"].predict(Xb[B["features"]])}
     thr = {"A": A["thr"], "B": B["thr"]}

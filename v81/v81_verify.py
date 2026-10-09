@@ -127,7 +127,8 @@ def verify(sb, now):
 
 # ------------------------------------------------------------------ 2) PDF hisobot
 def summarize(D, keys):
-    g = D.groupby(keys)[["n", "sum_ae", "sum_err", "sum_se", "n_in80", "n_ok"]].sum(min_count=1)
+    cols = [c for c in ["n", "sum_ae", "sum_err", "sum_se", "n_in80", "n_ok", "aem", "pae"] if c in D]
+    g = D.groupby(keys)[cols].sum(min_count=1)
     g["MAE"] = g.sum_ae / g.n
     g["bias"] = g.sum_err / g.n
     g["RMSE"] = np.sqrt(g.sum_se / g.n)
@@ -137,7 +138,11 @@ def summarize(D, keys):
 
 
 def add_skill(g, keys):
-    """skill = 1 − MAE_model / MAE_persistence (bir xil guruh ichida)."""
+    """skill = 1 − MAE_model / MAE_persistence — persistence aynan modelning yacheykalarida
+    (sana × stansiya × modda × muddat guruhi), har yacheyka modelning juftliklar soni bilan tortiladi."""
+    if "pae" in g:
+        g["skill"] = (1 - g["aem"] / g["pae"]) * 100
+        return g
     other = [k for k in keys if k != "model"]
     if not other:
         pm = g["MAE"].get("persistence", np.nan)
@@ -263,6 +268,10 @@ def reports(sb, now):
     if D.empty:
         log.warning("v81_skill_daily bo'sh — PDF yasalmadi"); return
     for c in ["n", "sum_ae", "sum_err", "sum_se", "n_in80", "n_ok"]: D[c] = pd.to_numeric(D[c])
+    ck = ["date", "station_id", "pollutant", "lead_grp"]           # bir xil juftliklar: persistence shu yacheykada
+    pm = D[D.model == "persistence"].assign(pmae=lambda x: x.sum_ae / x.n).set_index(ck)["pmae"]
+    D = D.join(pm, on=ck)
+    D["pae"], D["aem"] = D.n * D.pmae, D.sum_ae.where(D.pmae.notna())
     st = sb.storage.from_(BUCKET)
     for days in [7, 30]:
         pdf = build_pdf(D, days, end)

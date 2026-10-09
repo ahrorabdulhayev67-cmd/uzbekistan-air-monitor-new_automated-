@@ -56,7 +56,9 @@
     const m = new Map();
     for (const r of rows) {
       const k = keyFn(r);
-      const a = m.get(k) || { n: 0, ae: 0, err: 0, se: 0, in80: 0, ok: 0, nok: 0 };
+      const a = m.get(k) || { n: 0, ae: 0, err: 0, se: 0, in80: 0, ok: 0, nok: 0, aem: 0, pae: 0 };
+      const pmc = state.pm && state.pm.get(`${r.date}|${r.station_id}|${r.pollutant}|${r.lead_grp}`);
+      if (pmc != null) { a.aem += r.sum_ae; a.pae += r.n * pmc; }
       a.n += r.n; a.ae += r.sum_ae; a.err += r.sum_err; a.se += r.sum_se; a.in80 += r.n_in80;
       if (r.n_ok != null && isFinite(r.n_ok)) { a.ok += r.n_ok; a.nok += r.n; }
       m.set(k, a);
@@ -68,8 +70,8 @@
     return m;
   }
   const skill = (m, keyOf) => (id, ...rest) => {
-    const a = m.get(keyOf(id, ...rest)), p = m.get(keyOf("persistence", ...rest));
-    return a && p && p.MAE > 0 ? (1 - a.MAE / p.MAE) * 100 : null;
+    const a = m.get(keyOf(id, ...rest));
+    return a && a.pae > 0 ? (1 - a.aem / a.pae) * 100 : null;
   };
 
   // ---------- ma'lumot ----------
@@ -79,6 +81,9 @@
       ["select", "date,station_id,model,pollutant,lead_grp,n,sum_ae,sum_err,sum_se,n_in80,n_ok"],
       ["date", `gte.${since}`], ["order", "date.asc"]]);
     state.rows = rows.map((r) => ({ ...r, n: +r.n, sum_ae: +r.sum_ae, sum_err: +r.sum_err, sum_se: +r.sum_se, n_in80: +r.n_in80, n_ok: r.n_ok == null ? null : +r.n_ok }));
+    // persistence MAE har bir yacheykada (sana × stansiya × modda × muddat) — skill bir xil juftliklarda
+    state.pm = new Map(state.rows.filter((r) => r.model === "persistence" && r.n > 0)
+      .map((r) => [`${r.date}|${r.station_id}|${r.pollutant}|${r.lead_grp}`, r.sum_ae / r.n]));
   }
 
   function filtered(withStation = true) {
