@@ -5,6 +5,9 @@ warnings.filterwarnings("ignore")
 import numpy as np, pandas as pd, requests, torch
 from datetime import datetime, timezone, timedelta
 from supabase import create_client
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else "")
+from v81_explain import build_explanations          # "Havo holati sharhi" (SHAP + fizik qoidalar)
+LAST_EXPL = []                                       # oxirgi ishga tushirishdagi sharhlar (tekshirish uchun)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("v81")
@@ -351,6 +354,11 @@ def run_station(sb, sid, t, now, MQ, M, dry):
             cv = np.array([cg[g] or 0.0 for g in GRP(lead)])
             res[(pol, "Ensemble-K")] = tuple(np.expm1(np.log1p(np.clip(v, 0, None)) + cv) for v in res[(pol, "Ensemble")])
 
+    try:                                                  # sharh xatosi prognozni to'xtatmaydi
+        EXPL = build_explanations(sid, t, X, A, res, lead); LAST_EXPL.extend(EXPL)
+    except Exception as e:
+        EXPL = []; log.warning("[%s] havo holati sharhi yaratilmadi: %s", sid, e)
+
     prob = {"A": A["clf"].predict(X[A["features"]]), "B": B["clf"].predict(Xb[B["features"]])}
     thr = {"A": A["thr"], "B": B["thr"]}
 
@@ -376,6 +384,12 @@ def run_station(sb, sid, t, now, MQ, M, dry):
         log.info("DRY-RUN: %d qator yozilmadi", len(rows)); return pd.DataFrame(rows)
     sb.table("forecasts_v81").upsert(rows, on_conflict="run_time,station_id,model,pollutant,lead_h").execute()
     log.info("forecasts_v81 ga %d qator yozildi", len(rows))
+    if EXPL:
+        try:
+            sb.table("v81_explain").upsert(EXPL, on_conflict="station_id,kind").execute()
+            log.info("[%s] havo holati sharhi yozildi", sid)
+        except Exception as e:
+            log.warning("[%s] v81_explain yozilmadi: %s", sid, e)
     return pd.DataFrame(rows)
 
 if __name__ == "__main__":
