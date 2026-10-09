@@ -31,6 +31,9 @@
   // Stansiya qoldiqlari interpolyatsiyasi: r = ln(o'lchov / (daraja × LUR)), Gauss ℓ = 3 km, shrinkage p = 0.5.
   // Leave-one-out (11 stansiya, 2026-07…10): MAE LUR'ga nisbatan −8% (PM2.5 6.14→5.66, PM10 26.7→24.4).
   const RES_L_KM = 3, RES_PRIOR = 0.5, MIN_OBS = 1;    // MIN_OBS: <1 µg/m³ — sensor noli, hisobga olinmaydi
+  // Faqat ko'rinish: ko'cha koeffitsienti chizishda ~500 m Gauss bilan silliqlanadi (mahalla darajasi).
+  // Hisob (stansiya tuzatmasi, nuqta grafigi) to'liq 100 m LUR bilan qoladi.
+  const DISPLAY_SMOOTH_M = 500;
   const levFor = (v) => (S.mode === "tashkent" ? TASH_LEVELS[v] : LEVELS[v]);                                   // qatlam shaffofligi (0–255)
 
   const S = { mode: "silam", v: "pm25", step: 0, t: null, corr: true, playing: null, frames: [] };
@@ -183,16 +186,19 @@
       }
     } catch (e) { console.warn("prognoz", e); }
     const T = { p, Hh, W, fac, frames, st, stf, stInfo, mask: boundary ? buildMask(p, Hh, W, boundary) : null };
+    T.facD = smoothFactors(T);
     // Har bir kadr uchun stansiya qoldiqlari (log): kuzatuvda — o'lchovdan, prognozda — stansiyaning o'z prognozidan
     for (const f of frames) {
-      f.res = {};
+      f.res = {}; f.resD = {};
       for (const v of TASH_VARS) {
-        const R = new Map(), src = f.kind === "kuzatuv" ? st : stf;
+        const R = new Map(), RD = new Map(), src = f.kind === "kuzatuv" ? st : stf;
         for (const s of stInfo) {
           const o = src.get(`${s.id}|${f.t}`), val = o ? o[v] : null, F = tashFactorAt(T, v, s.lon, s.lat);
           if (val != null && val >= MIN_OBS && F > 0 && f[v] > 0) R.set(s.id, Math.log(val / (f[v] * F)));
+          const Fd = gridAt(T, T.facD[v], s.lon, s.lat);                // ko'rinish: silliqlangan koeffitsient bilan
+          if (val != null && val >= MIN_OBS && Fd > 0 && f[v] > 0) RD.set(s.id, Math.log(val / (f[v] * Fd)));
         }
-        f.res[v] = R;
+        f.res[v] = R; f.resD[v] = RD;
       }
     }
     cache.tash = T;
@@ -221,6 +227,37 @@
     return m;
   }
 
+  const gridAt = (T, A, lng, lat) => {
+    const [w, s, e, n] = T.p.bbox;
+    const c = Math.floor(((lng - w) / (e - w)) * T.W), r = Math.floor(((n - lat) / (n - s)) * T.Hh);
+    return c >= 0 && c < T.W && r >= 0 && r < T.Hh ? A[r * T.W + c] : null;
+  };
+  // Ko'rinish uchun silliqlash: normallashtirilgan Gauss konvolyutsiyasi (koeffitsient yo'q joylar o'rtachani buzmaydi)
+  function smoothFactors(T) {
+    const [w, s, e, n] = T.p.bbox, W = T.W, Hh = T.Hh, N = W * Hh;
+    const mPerPx = ((e - w) / W) * 111320 * Math.cos((((s + n) / 2) * Math.PI) / 180);
+    const sig = DISPLAY_SMOOTH_M / mPerPx, R = Math.ceil(3 * sig), K = new Float32Array(2 * R + 1);
+    for (let j = -R; j <= R; j++) K[j + R] = Math.exp(-(j * j) / (2 * sig * sig));
+    const blur = (src) => {
+      const tmp = new Float32Array(N), out = new Float32Array(N);
+      for (let r = 0; r < Hh; r++) { const o = r * W;
+        for (let c = 0; c < W; c++) { let a = 0; const j0 = Math.max(-R, -c), j1 = Math.min(R, W - 1 - c);
+          for (let j = j0; j <= j1; j++) a += K[j + R] * src[o + c + j]; tmp[o + c] = a; } }
+      for (let c = 0; c < W; c++)
+        for (let r = 0; r < Hh; r++) { let a = 0; const j0 = Math.max(-R, -r), j1 = Math.min(R, Hh - 1 - r);
+          for (let j = j0; j <= j1; j++) a += K[j + R] * tmp[(r + j) * W + c]; out[r * W + c] = a; }
+      return out;
+    };
+    const D = {};
+    for (const v of TASH_VARS) {
+      const F = T.fac[v], m = new Float32Array(N), fm = new Float32Array(N);
+      for (let k = 0; k < N; k++) if (F[k] > 0) { m[k] = 1; fm[k] = F[k]; }
+      const num = blur(fm), den = blur(m), out = new Float32Array(N);
+      for (let k = 0; k < N; k++) out[k] = m[k] && den[k] > 1e-6 ? num[k] / den[k] : 0;
+      D[v] = out;
+    }
+    return D;
+  }
   // Gauss og'irliklari har stansiya uchun bir marta hisoblanadi (ajraladigan: exp(−dx²/2ℓ²)·exp(−dy²/2ℓ²))
   const KX = (lat) => 111.32 * Math.cos((lat * Math.PI) / 180), KY = 110.57, INV2L2 = 1 / (2 * RES_L_KM * RES_L_KM);
   function stationWeights(T) {
@@ -251,10 +288,10 @@
   }
 
   function renderTashkent(T, v, i) {
-    const f = T.frames[i], level = f[v], lev = TASH_LEVELS[v], F = T.fac[v];
+    const f = T.frames[i], level = f[v], lev = TASH_LEVELS[v], F = T.facD[v];
     const cv = document.createElement("canvas"); cv.width = T.W; cv.height = T.Hh;
     const ctx = cv.getContext("2d"), img = ctx.createImageData(T.W, T.Hh), d = img.data;
-    const Wg = stationWeights(T), R = (f.res && f.res[v]) || new Map();
+    const Wg = stationWeights(T), R = (f.resD && f.resD[v]) || new Map();
     const ids = [...R.keys()].filter((id) => Wg.has(id)), ws = ids.map((id) => Wg.get(id)), rs = ids.map((id) => R.get(id));
     for (let k = 0; k < F.length; k++) {
       if (F[k] <= 0 || (T.mask && !T.mask[k])) continue;
@@ -430,7 +467,8 @@
       info = `<b>Toshkent, ~100 m.</b> Shahar darajasi × ko'cha koeffitsiyenti × stansiya tuzatmasi. Darajasi: o'tgan soatlarda ` +
         `stansiyalar o'lchovlarining medianasi, kelajakda stansiyalar bo'yicha V8.1 ansambl prognozlarining medianasi. ` +
         `Stansiya tuzatmasi: har bir stansiyadagi o'lchov (prognoz) va model farqi ~${RES_L_KM} km radiusda yoyiladi — ` +
-        `xarita stansiyalar yonida ularning qiymatiga yaqinlashadi. Koeffitsiyent o'rta ko'chalargacha (OSM secondary/tertiary) masofaga bog'liq: ` +
+        `xarita stansiyalar yonida ularning qiymatiga yaqinlashadi. Ko'cha ta'siri xaritada ~${DISPLAY_SMOOTH_M} m bo'yicha silliqlangan ` +
+        `(mahalla darajasi); nuqtaga bosilganda — aniq 100 m qiymat. Koeffitsiyent o'rta ko'chalargacha (OSM secondary/tertiary) masofaga bog'liq: ` +
         `ko'cha yonida yuqori, ~150 m da fonga tushadi (LUR, 11 stansiya` +
         (pp && nul ? `, xatoni ${(100 * (1 - pp.loo_rmse / nul)).toFixed(0)}% kamaytiradi` : "") +
         `). Shahar chegarasidan ${BUFFER_M / 1000} km gacha ko'rsatiladi; stansiyalardan uzoqda qiymatlar taxminiy.`;
