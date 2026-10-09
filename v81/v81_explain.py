@@ -8,7 +8,7 @@ Ikki manba birlashtiriladi:
 "Hozir" qismi kuzatuvdan (PM2.5/PM10 nisbati: < 0.3 — chang, > 0.5 — yonish manbalari).
 Raqamlar — ansambl prognozidan (portal va bot bilan bir xil). SHAP sababni emas, model qaroriga
 nima ta'sir qilganini ko'rsatadi, shuning uchun matn "asosiy omillar" deydi.
-Toifalar: US EPA AQI (2024) chegaralari.
+Toifalar: DSanQN 0276-09 (portal va bot bilan bir xil); ikki moddadan og'irrog'i olinadi.
 """
 import re
 import numpy as np, pandas as pd
@@ -24,17 +24,21 @@ GROUPS = [
     ("Hozirgi ifloslanish", r"^(pm10_|pm25_|ratio_last)"),
     ("Sutka vaqti", r"^(hour|doy|weekday|holiday|lead_h)"),
 ]
-AQI = {"pm25": [(9.0, "yaxshi"), (35.4, "o'rtacha"), (55.4, "sezgir guruhlar uchun zararli"),
-                (125.4, "zararli"), (225.4, "juda zararli")],
-       "pm10": [(54, "yaxshi"), (154, "o'rtacha"), (254, "sezgir guruhlar uchun zararli"),
-                (354, "zararli"), (424, "juda zararli")]}
+THR = {"pm25": [60, 120, 180, 300], "pm10": [75, 150, 250, 350]}          # DSanQN 0276-09
+CATS = ["yaxshi", "qoniqarli", "o'rtacha ifloslangan", "yuqori ifloslangan", "qoniqarsiz, xavfli"]
 PEAK_H = 24          # "eng yuqori soat" qidiriladigan oyna (kechki pikni ham qamraydi)
 PEAK_FROM = 4        # birinchi soatlar "now" sharhida — eng yuqori soat undan keyin qidiriladi
 NOW_H = 3            # "kelgusi soatlar" uchun muddat
 
 
-def cat(pol, v):
-    return next((w for t, w in AQI[pol] if v <= t), "xavfli")
+def _lvl(pol, v):
+    return -1 if v is None or not np.isfinite(v) else int(sum(v >= x for x in THR[pol]))
+
+
+def cat(p25, p10=np.nan):
+    """Portal bilan bir xil: ikki moddadan og'irrog'i."""
+    i = max(_lvl("pm25", p25), _lvl("pm10", p10))
+    return CATS[i] if i >= 0 else "—"
 
 
 def _group_map(features):
@@ -100,7 +104,7 @@ def _reasons(row, S, high, hl, dust):
 
 
 def build_explanations(sid, t, X, A, res, lead):
-    """v81_explain jadvali uchun ikki yozuv: 'now' (hozir + kelgusi 3 soat) va 'peak' (12 soat ichidagi eng yuqori soat)."""
+    """v81_explain jadvali uchun ikki yozuv: 'now' (hozir + kelgusi 3 soat) va 'peak' (24 soat ichidagi eng yuqori soat)."""
     C = _contrib(A, X)
     e25 = np.asarray(res[("pm25", "Ensemble")][1], float); e10 = np.asarray(res[("pm10", "Ensemble")][1], float)
     lead = np.asarray(lead)
@@ -126,28 +130,27 @@ def build_explanations(sid, t, X, A, res, lead):
     i = int(np.argmin(np.abs(lead - NOW_H)))
     hl, R, why = reasons_at(i)
     if np.isfinite(n25):
-        l1 = f"Hozir: PM2.5 — {n25:.0f} µg/m³ ({cat('pm25', n25)})"
-        if dust: l1 += f", PM10 — {n10:.0f} µg/m³. Asosan yirik zarrachalar — havoda chang bor."
-        elif ratio > 0.5 and n25 > 35: l1 += ". Asosan mayda zarrachalar — isitish, transport va chiqindi yoqish tutuni."
-        else: l1 += "."
+        l1 = f"Hozir: PM2.5 — {n25:.0f}" + (f", PM10 — {n10:.0f}" if np.isfinite(n10) else "") + f" µg/m³ ({cat(n25, n10)})."
+        if dust: l1 += " Asosan yirik zarrachalar — havoda chang bor."
+        elif ratio > 0.5 and n25 > 35: l1 += " Asosan mayda zarrachalar — isitish, transport va chiqindi yoqish tutuni."
         trend = "oshadi" if e25[i] > n25 * 1.15 else "kamayadi" if e25[i] < n25 * 0.85 else "deyarli o'zgarmaydi"
     else:
         l1, trend = "Hozirgi o'lchov mavjud emas.", None
-    l2 = (f"Kelgusi {NOW_H} soatda ifloslanish {trend}: PM2.5 ~{e25[i]:.0f} µg/m³ ({cat('pm25', e25[i])})." if trend
-          else f"Kelgusi {NOW_H} soatda PM2.5 ~{e25[i]:.0f} µg/m³ ({cat('pm25', e25[i])}) kutilmoqda.")
-    out.append(dict(kind="now", lead=int(lead[i]), pm25=e25[i], pm10=e10[i], category=cat("pm25", e25[i]), trend=trend,
+    l2 = (f"Kelgusi {NOW_H} soatda ifloslanish {trend}: PM2.5 ~{e25[i]:.0f} µg/m³ ({cat(e25[i], e10[i])})." if trend
+          else f"Kelgusi {NOW_H} soatda PM2.5 ~{e25[i]:.0f} µg/m³ ({cat(e25[i], e10[i])}) kutilmoqda.")
+    out.append(dict(kind="now", lead=int(lead[i]), pm25=e25[i], pm10=e10[i], category=cat(e25[i], e10[i]), trend=trend,
                     text=" ".join(x for x in [l1, l2, why, warn] if x), factors=R))
 
     # --- peak ---
     w = np.where((lead >= PEAK_FROM) & (lead <= PEAK_H))[0]
     i = int(w[np.argmax(e25[w])])
     hl, R, why = reasons_at(i)
-    c = cat("pm25", e25[i])
+    c = cat(e25[i], e10[i])
     d_now, d_t = (t + pd.Timedelta(hours=5)).date(), (t + pd.Timedelta(hours=int(lead[i]) + 5)).date()
     when = (f"bugun soat {hl:02d}:00 da" if d_t == d_now else
             f"bugun tunda, soat {hl:02d}:00 da" if hl < 6 else f"ertaga soat {hl:02d}:00 da")
     l1 = (f"Kelgusi {PEAK_H} soatda havo sifati {c} darajada qoladi (eng yuqori qiymat {when} ~{e25[i]:.0f} µg/m³)."
-          if c in ("yaxshi", "o'rtacha") else
+          if c in ("yaxshi", "qoniqarli") else
           f"Kelgusi {PEAK_H} soatda eng yuqori ifloslanish {when} kutilmoqda: PM2.5 ~{e25[i]:.0f} µg/m³ ({c}).")
     out.append(dict(kind="peak", lead=int(lead[i]), pm25=e25[i], pm10=e10[i], category=c, trend=None,
                     text=" ".join(x for x in [l1, why, warn] if x), factors=R))
