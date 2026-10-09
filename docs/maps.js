@@ -34,6 +34,11 @@
   // Faqat ko'rinish: ko'cha koeffitsienti chizishda ~500 m Gauss bilan silliqlanadi (mahalla darajasi).
   // Hisob (stansiya tuzatmasi, nuqta grafigi) to'liq 100 m LUR bilan qoladi.
   const DISPLAY_SMOOTH_M = 500;
+  // Robust: stansiya qoldig'i shu soatdagi medianadan ×2 dan ortiq farq qilsa, yoyilishi ×2 bilan cheklanadi
+  // (LOO: aniqlik o'zgarmaydi — PM2.5 5.66 = 5.66, PM10 24.39 → 24.36; yolg'iz keskin qiymat mahallani bo'yamaydi).
+  const RES_CAP = Math.log(2);
+  // Ishonchlilik: stansiyadan 6 km gacha to'liq rang, 12 km da shaffof (ℓ = 3 km: 2ℓ da og'irlik 0.14 ga tushadi)
+  const FADE_KM = [6, 12];
   const levFor = (v) => (S.mode === "tashkent" ? TASH_LEVELS[v] : LEVELS[v]);                                   // qatlam shaffofligi (0–255)
 
   const S = { mode: "silam", v: "pm25", step: 0, t: null, corr: true, playing: null, frames: [] };
@@ -198,6 +203,7 @@
           const Fd = gridAt(T, T.facD[v], s.lon, s.lat);                // ko'rinish: silliqlangan koeffitsient bilan
           if (val != null && val >= MIN_OBS && Fd > 0 && f[v] > 0) RD.set(s.id, Math.log(val / (f[v] * Fd)));
         }
+        capRes(R); capRes(RD);
         f.res[v] = R; f.resD[v] = RD;
       }
     }
@@ -275,6 +281,81 @@
     }
     return T.wgt;
   }
+  function capRes(R) {
+    if (R.size < 3) return;
+    const a = [...R.values()].sort((x, y) => x - y), m = a.length >> 1, md = a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+    for (const [k, r] of R) R.set(k, Math.max(md - RES_CAP, Math.min(md + RES_CAP, r)));
+  }
+  function fadeGrid(T) {
+    if (T.fade) return T.fade;
+    const [w, s, e, n] = T.p.bbox, kx = KX((s + n) / 2), out = new Float32Array(T.W * T.Hh), span = FADE_KM[1] - FADE_KM[0];
+    for (let r = 0; r < T.Hh; r++) {
+      const lat = n - ((r + 0.5) / T.Hh) * (n - s);
+      for (let c = 0; c < T.W; c++) {
+        const lon = w + ((c + 0.5) / T.W) * (e - w); let dm = 1e9;
+        for (const st of T.stInfo) { const dx = (lon - st.lon) * kx, dy = (lat - st.lat) * KY, d2 = dx * dx + dy * dy; if (d2 < dm) dm = d2; }
+        out[r * T.W + c] = Math.max(0, Math.min(1, (FADE_KM[1] - Math.sqrt(dm)) / span));
+      }
+    }
+    return (T.fade = out);
+  }
+
+  // ---------- PNG yuklab olish (joriy kadr: xarita + stansiyalar + shkala + manbalar) ----------
+  const MODE_NAME = { silam: "O'zbekiston · SILAM", cams: "O'zbekiston · CAMS", tashkent: "Toshkent · 100 m" };
+  function showImageModal(url) {
+    const m = document.createElement("div");
+    m.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;display:flex;flex-direction:column;" +
+      "align-items:center;justify-content:center;padding:16px;gap:12px";
+    m.innerHTML = `<img src="${url}" alt="Xarita" style="max-width:100%;max-height:78vh;border-radius:8px;background:#fff">` +
+      `<div style="color:#fff;font:14px Inter,sans-serif;text-align:center">Rasmni bosib turing va «Saqlash» ni tanlang</div>` +
+      `<button type="button" style="padding:8px 18px;border-radius:9px;border:0;font:600 14px Inter,sans-serif;cursor:pointer">Yopish</button>`;
+    m.onclick = (e) => { if (e.target === m || e.target.tagName === "BUTTON") m.remove(); };
+    document.body.appendChild(m);
+  }
+  async function exportPNG() {
+    const btn = $("dl-btn"); if (btn) btn.disabled = true;
+    try {
+      await new Promise((res) => { map.once("idle", res); map.triggerRepaint(); setTimeout(res, 4000); });
+      const mc = map.getCanvas(), dpr = mc.width / mc.clientWidth, Wd = mc.width, Mh = mc.height, P = 16 * dpr;
+      const head = Math.round(62 * dpr), foot = Math.round(100 * dpr);
+      const cv = document.createElement("canvas"); cv.width = Wd; cv.height = head + Mh + foot;
+      const x = cv.getContext("2d"), font = (wt, px) => `${wt} ${px * dpr}px Inter, Arial, sans-serif`;
+      x.fillStyle = "#ffffff"; x.fillRect(0, 0, cv.width, cv.height); x.textBaseline = "middle";
+      const unit = S.mode === "tashkent" || ["pm25", "pm10", "no2", "so2", "o3"].includes(S.v) ? ", µg/m³" : S.v === "co" ? ", mg/m³" : "";
+      x.fillStyle = "#14213d"; x.font = font(600, 17); x.fillText(`Toshkent havo sifati — ${VAR[S.v]}${unit}`, P, 21 * dpr);
+      const corr = S.mode !== "tashkent" && S.corr && (S.v === "pm25" || S.v === "pm10") ? " · stansiyalar bo'yicha tuzatilgan" : "";
+      x.fillStyle = "#5b6475"; x.font = font(400, 12.5); x.fillText(`${MODE_NAME[S.mode]} · ${$("maptime").textContent}${corr}`, P, 44 * dpr);
+      x.drawImage(mc, 0, head);
+      for (const mk of stMarkers.values()) {                       // HTML belgilar canvasda yo'q — qo'lda chiziladi
+        const el = mk.getElement(); if (!el.textContent) continue;
+        const pt = map.project(mk.getLngLat()), cx = pt.x * dpr, cy = head + pt.y * dpr, r = 16 * dpr;
+        if (cx < 0 || cx > Wd || cy < head || cy > head + Mh) continue;
+        x.beginPath(); x.arc(cx, cy, r, 0, 2 * Math.PI); x.fillStyle = el.style.background || "#9aa5b4"; x.fill();
+        x.lineWidth = 2 * dpr; x.strokeStyle = el.style.outline ? "rgba(0,0,0,.5)" : "#ffffff";
+        if (el.style.outline) x.setLineDash([4 * dpr, 3 * dpr]); x.stroke(); x.setLineDash([]);
+        x.fillStyle = "#111"; x.font = font(700, 11.5); x.textAlign = "center"; x.fillText(el.textContent, cx, cy + 0.5 * dpr); x.textAlign = "left";
+      }
+      const lev = levFor(S.v), y0 = head + Mh + 14 * dpr, bw = Math.min(74 * dpr, (Wd - 2 * P) / lev.length);
+      x.font = font(400, 10.5);
+      for (let i = 0; i < lev.length; i++) {
+        x.fillStyle = PAL[i]; x.fillRect(P + i * bw, y0, bw - 2 * dpr, 13 * dpr);
+        x.fillStyle = "#333"; x.fillText(i < lev.length - 1 ? `${lev[i]}–${lev[i + 1]}` : `> ${lev[i]}`, P + i * bw, y0 + 25 * dpr);
+      }
+      x.fillStyle = "#5b6475"; x.font = font(400, 10.5);
+      const src = S.mode === "tashkent" ? "stansiyalar o'lchovlari, V8.1 ansambl prognozi, LUR (OpenStreetMap)"
+                                        : (S.mode === "silam" ? "FMI SILAM (CC BY 4.0)" : "Copernicus CAMS");
+      x.fillText(`Manba: ${src} · Asos xarita: © OpenFreeMap © OpenStreetMap`, P, y0 + 50 * dpr);
+      x.fillText(`Yaratildi: ${fmtT(Date.now())} (Toshkent vaqti) · Toshkent havo sifati`, P, y0 + 68 * dpr);
+      const name = `toshkent_havo_${S.mode}_${S.v}_${$("maptime").textContent.replace(/[^0-9A-Za-z]+/g, "_")}.png`;
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg && tg.initData) { showImageModal(cv.toDataURL("image/png")); return; }   // Telegram ichida to'g'ridan-to'g'ri yuklab bo'lmaydi
+      const blob = await new Promise((res) => cv.toBlob(res, "image/png"));
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } catch (e) { console.warn("PNG", e); banner("Rasmni yaratib bo'lmadi: " + e.message); }
+    finally { if (btn) btn.disabled = false; }
+  }
+
   // Nuqtadagi qoldiq (nuqta grafigi uchun): xuddi shu formula
   function resAt(T, f, v, lng, lat) {
     const R = f.res && f.res[v]; if (!R || !R.size) return 0;
@@ -293,12 +374,13 @@
     const ctx = cv.getContext("2d"), img = ctx.createImageData(T.W, T.Hh), d = img.data;
     const Wg = stationWeights(T), R = (f.resD && f.resD[v]) || new Map();
     const ids = [...R.keys()].filter((id) => Wg.has(id)), ws = ids.map((id) => Wg.get(id)), rs = ids.map((id) => R.get(id));
+    const FD = fadeGrid(T);
     for (let k = 0; k < F.length; k++) {
-      if (F[k] <= 0 || (T.mask && !T.mask[k])) continue;
+      if (F[k] <= 0 || (T.mask && !T.mask[k]) || FD[k] <= 0) continue;
       let num = 0, den = RES_PRIOR;
       for (let j = 0; j < ws.length; j++) { const wj = ws[j][k]; num += wj * rs[j]; den += wj; }
       const c = classify(level * F[k] * Math.exp(num / den), lev); if (c < 0) continue;
-      const rgb = PALRGB[c], p = k * 4; d[p] = rgb[0]; d[p + 1] = rgb[1]; d[p + 2] = rgb[2]; d[p + 3] = ALPHA;
+      const rgb = PALRGB[c], p = k * 4; d[p] = rgb[0]; d[p + 1] = rgb[1]; d[p + 2] = rgb[2]; d[p + 3] = Math.round(ALPHA * FD[k]);
     }
     ctx.putImageData(img, 0, 0);
     const [w, s, e, n] = T.p.bbox;
@@ -468,7 +550,8 @@
         `stansiyalar o'lchovlarining medianasi, kelajakda stansiyalar bo'yicha V8.1 ansambl prognozlarining medianasi. ` +
         `Stansiya tuzatmasi: har bir stansiyadagi o'lchov (prognoz) va model farqi ~${RES_L_KM} km radiusda yoyiladi — ` +
         `xarita stansiyalar yonida ularning qiymatiga yaqinlashadi. Ko'cha ta'siri xaritada ~${DISPLAY_SMOOTH_M} m bo'yicha silliqlangan ` +
-        `(mahalla darajasi); nuqtaga bosilganda — aniq 100 m qiymat. Koeffitsiyent o'rta ko'chalargacha (OSM secondary/tertiary) masofaga bog'liq: ` +
+        `(mahalla darajasi); nuqtaga bosilganda — aniq 100 m qiymat. Stansiyalardan ${FADE_KM[0]} km dan uzoqda rang xiralashadi, ` +
+        `${FADE_KM[1]} km dan keyin ko'rsatilmaydi (o'lchov yo'q — baho ishonchsiz). Koeffitsiyent o'rta ko'chalargacha (OSM secondary/tertiary) masofaga bog'liq: ` +
         `ko'cha yonida yuqori, ~150 m da fonga tushadi (LUR, 11 stansiya` +
         (pp && nul ? `, xatoni ${(100 * (1 - pp.loo_rmse / nul)).toFixed(0)}% kamaytiradi` : "") +
         `). Shahar chegarasidan ${BUFFER_M / 1000} km gacha ko'rsatiladi; stansiyalardan uzoqda qiymatlar taxminiy.`;
@@ -532,7 +615,7 @@
 
   function init() {
     if (!C || !C.SUPABASE_URL) { banner("config.js topilmadi."); return; }
-    map = new maplibregl.Map({ container: "map", style: "https://tiles.openfreemap.org/styles/positron",
+    map = new maplibregl.Map({ container: "map", style: "https://tiles.openfreemap.org/styles/positron", preserveDrawingBuffer: true,
       bounds: UZ_BOUNDS, fitBoundsOptions: { padding: 20 }, attributionControl: { compact: true } });
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.on("click", (e) => { ptLngLat = e.lngLat; renderPoint(); });
@@ -540,6 +623,17 @@
     addEventListener("resize", () => ptChart.resize());
     $("pt-close").onclick = () => { $("pt-card").classList.add("hidden"); ptLngLat = null; };
 
+    const tb = document.querySelector(".timebar");
+    if (tb && !$("dl-btn")) {
+      const st = document.createElement("style");
+      st.textContent = ".dl-btn{height:34px;padding:0 12px;border-radius:9px;border:1px solid var(--line);background:var(--card);" +
+        "color:var(--ink);font:600 13px Inter,sans-serif;cursor:pointer;white-space:nowrap;flex:0 0 auto}.dl-btn:hover{background:var(--bg)}" +
+        ".dl-btn:disabled{opacity:.5;cursor:wait}";
+      document.head.appendChild(st);
+      const b = document.createElement("button");
+      b.id = "dl-btn"; b.type = "button"; b.className = "dl-btn"; b.textContent = "⤓ PNG";
+      b.title = "Joriy xaritani rasm (PNG) sifatida yuklab olish"; b.onclick = exportPNG; tb.appendChild(b);
+    }
     document.querySelectorAll("#mode button").forEach((b) => b.onclick = () => {
       document.querySelectorAll("#mode button").forEach((x) => x.classList.toggle("on", x === b));
       const prev = S.mode; S.mode = b.dataset.v;
