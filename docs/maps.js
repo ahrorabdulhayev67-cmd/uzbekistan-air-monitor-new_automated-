@@ -45,6 +45,7 @@
   // Faqat ko'rinish: rang toifa o'rtalari orasida chiziqli o'tadi (toifa o'rtasida — legendadagi rang).
   const SMOOTH_COLORS = true;
   const VIDEO_MAX_W = 1280;                            // video kengligi (piksel), juft songa yaxlitlanadi
+  const VIDEO_FPS = 10;                                // video kadr chastotasi (har soat kadri frameMs davomida takrorlanadi)
   const levFor = (v) => (S.mode === "tashkent" ? TASH_LEVELS[v] : LEVELS[v]);                                   // qatlam shaffofligi (0–255)
 
   const S = { mode: "silam", v: "pm25", step: 0, t: null, corr: true, playing: null, frames: [] };
@@ -412,36 +413,90 @@
     m.onclick = (e) => { if (e.target === m || e.target.tagName === "BUTTON") m.remove(); };
     document.body.appendChild(m);
   }
-  async function exportVideo() {
-    const btn = $("vid-btn"); if (!btn || btn.disabled) return;
-    if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) {
-      banner("Bu brauzer video yozishni qo'llab-quvvatlamaydi (Chrome, Edge yoki Safari'da oching)."); return;
+  const loadScript = (url) => new Promise((res, rej) => {
+    const s = document.createElement("script"); s.src = url; s.onload = res;
+    s.onerror = () => rej(new Error("skript yuklanmadi: " + url)); document.head.appendChild(s);
+  });
+  function videoCanvas(f0) {
+    const sc = Math.min(1, VIDEO_MAX_W / f0.width), out = document.createElement("canvas");
+    out.width = 2 * Math.round((f0.width * sc) / 2); out.height = 2 * Math.round((f0.height * sc) / 2);
+    const ox = out.getContext("2d");
+    const paint = (c) => { ox.fillStyle = "#ffffff"; ox.fillRect(0, 0, out.width, out.height); ox.drawImage(c, 0, 0, out.width, out.height); };
+    return { out, paint };
+  }
+  // Asosiy usul: WebCodecs (H.264) + mp4-muxer. Har bir kadr vaqt belgisi bilan kodlanadi —
+  // davomiylik aniq (kadrlar soni × kadr vaqti) va hisoblash tezligiga bog'liq emas.
+  async function encodeMP4(n, frameMs, goto, onProgress) {
+    if (!window.Mp4Muxer) await loadScript("https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.1/build/mp4-muxer.js");
+    await goto(0);
+    const f0 = composeFrame(), { out, paint } = videoCanvas(f0), W = out.width, Hh = out.height;
+    let cfg = null;
+    for (const codec of ["avc1.640028", "avc1.4d0028", "avc1.420028", "avc1.640033", "avc1.42003e"]) {
+      const c = { codec, width: W, height: Hh, bitrate: 5e6, framerate: VIDEO_FPS, avc: { format: "avc" } };
+      try { if ((await VideoEncoder.isConfigSupported(c)).supported) { cfg = c; break; } } catch (e) { /* keyingisi */ }
     }
-    if (S.playing) togglePlay();
+    if (!cfg) throw new Error("bu brauzerda H.264 kodlovchi yo'q");
+    const target = new Mp4Muxer.ArrayBufferTarget();
+    const muxer = new Mp4Muxer.Muxer({ target, video: { codec: "avc", width: W, height: Hh }, fastStart: "in-memory" });
+    let encErr = null;
+    const enc = new VideoEncoder({ output: (ch, meta) => muxer.addVideoChunk(ch, meta), error: (e) => { encErr = e; } });
+    enc.configure(cfg);
+    const per = Math.max(1, Math.round((frameMs / 1000) * VIDEO_FPS)), dt = 1e6 / VIDEO_FPS;
+    let k = 0;
+    for (let i = 0; i < n; i++) {
+      if (i > 0) await goto(i);
+      paint(i === 0 ? f0 : composeFrame());
+      const reps = i === n - 1 ? 2 * per : per;
+      for (let r = 0; r < reps; r++, k++) {
+        const vf = new VideoFrame(out, { timestamp: Math.round(k * dt), duration: Math.round(dt) });
+        enc.encode(vf, { keyFrame: k % (2 * VIDEO_FPS) === 0 }); vf.close();
+        while (enc.encodeQueueSize > 8) await sleep(5);
+        if (encErr) throw encErr;
+      }
+      onProgress(i + 1);
+    }
+    await enc.flush(); enc.close(); muxer.finalize();
+    if (encErr) throw encErr;
+    return new Blob([target.buffer], { type: "video/mp4" });
+  }
+  // Zaxira: MediaRecorder (real vaqt). Ushlab turish davomida kanvas qayta chiziladi — aks holda
+  // statik kanvas yangi kadr bermaydi va video bir necha soniyaga qisqarib qoladi.
+  async function recordMR(n, frameMs, goto, onProgress) {
     const mime = ["video/mp4;codecs=avc1.42E01E", "video/mp4", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"]
       .find((t) => MediaRecorder.isTypeSupported(t)) || "";
-    const ext = mime.startsWith("video/mp4") ? "mp4" : "webm";
+    await goto(0);
+    let cur = composeFrame();
+    const { out, paint } = videoCanvas(cur); paint(cur);
+    const rec = new MediaRecorder(out.captureStream(VIDEO_FPS), { ...(mime ? { mimeType: mime } : {}), videoBitsPerSecond: 5e6 });
+    const chunks = []; rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    const stopped = new Promise((r) => (rec.onstop = r));
+    const hold = async (ms) => { const t0 = performance.now(); while (performance.now() - t0 < ms) { paint(cur); await sleep(1000 / VIDEO_FPS); } };
+    rec.start(1000);
+    for (let i = 0; i < n; i++) {
+      if (i > 0) { rec.pause(); await goto(i); cur = composeFrame(); paint(cur); await sleep(60); rec.resume(); }
+      onProgress(i + 1);
+      await hold(i === n - 1 ? 2 * frameMs : frameMs);
+    }
+    rec.stop(); await stopped;
+    return { blob: new Blob(chunks, { type: mime || "video/webm" }), ext: mime.startsWith("video/mp4") ? "mp4" : "webm" };
+  }
+  async function exportVideo() {
+    const btn = $("vid-btn"); if (!btn || btn.disabled) return;
+    const canWC = "VideoEncoder" in window && "VideoFrame" in window;
+    const canMR = !!window.MediaRecorder && !!HTMLCanvasElement.prototype.captureStream;
+    if (!canWC && !canMR) { banner("Bu brauzer video yaratishni qo'llab-quvvatlamaydi (Chrome, Edge yoki Safari'da oching)."); return; }
+    if (S.playing) togglePlay();
     const keep = S.step, n = S.frames.length, frameMs = Math.max(250, +$("speed").value || 700);
     const dlb = $("dl-btn"); btn.disabled = true; if (dlb) dlb.disabled = true;
     const goto = async (i) => { S.step = i; S.t = S.frames[i]; await draw(); await mapIdle(); };
+    const prog = (i) => { btn.textContent = `Video ${i}/${n}`; };
     try {
-      await goto(0);
-      const f0 = composeFrame(), sc = Math.min(1, VIDEO_MAX_W / f0.width), out = document.createElement("canvas");
-      out.width = 2 * Math.round((f0.width * sc) / 2); out.height = 2 * Math.round((f0.height * sc) / 2);
-      const ox = out.getContext("2d");
-      const paint = (c) => { ox.fillStyle = "#ffffff"; ox.fillRect(0, 0, out.width, out.height); ox.drawImage(c, 0, 0, out.width, out.height); };
-      paint(f0);
-      const rec = new MediaRecorder(out.captureStream(25), { ...(mime ? { mimeType: mime } : {}), videoBitsPerSecond: 6e6 });
-      const chunks = []; rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-      const stopped = new Promise((r) => (rec.onstop = r));
-      rec.start(1000);
-      for (let i = 0; i < n; i++) {
-        if (i > 0) { rec.pause(); await goto(i); paint(composeFrame()); await sleep(80); rec.resume(); }   // hisoblash vaqti videoga kirmaydi
-        btn.textContent = `Video ${i + 1}/${n}`;
-        await sleep(i === n - 1 ? 2 * frameMs : frameMs);
+      let blob = null, ext = "mp4";
+      if (canWC) {
+        try { blob = await encodeMP4(n, frameMs, goto, prog); }
+        catch (e) { console.warn("WebCodecs ishlamadi, MediaRecorder'ga o'tiladi:", e); if (!canMR) throw e; }
       }
-      rec.stop(); await stopped;
-      const blob = new Blob(chunks, { type: mime || "video/webm" });
+      if (!blob) { const r = await recordMR(n, frameMs, goto, prog); blob = r.blob; ext = r.ext; }
       const name = `toshkent_havo_${S.mode}_${S.v}_${fmtT(S.frames[0]).replace(/[^0-9]+/g, "")}_${n}soat.${ext}`;
       const tg = window.Telegram && window.Telegram.WebApp;
       if (tg && tg.initData) { showVideoModal(URL.createObjectURL(blob)); return; }
