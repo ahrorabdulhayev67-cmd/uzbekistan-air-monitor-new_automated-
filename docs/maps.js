@@ -27,7 +27,7 @@
   const TASH_STATIONS = [107, 108, 720, 729, 730, 731, 732, 733, 734, 738, 739];
   const UZ_BOUNDS = [[55.5, 37.0], [73.5, 46.0]];
   const ALPHA = 200;
-  const BUFFER_M = 2000;                               // shahar chegarasidan tashqariga ko'rsatiladigan masofa
+  const BUFFER_M = 0;                                  // faqat shahar hududi (chegaradan tashqarida ko'rsatilmaydi)
   // Stansiya qoldiqlari interpolyatsiyasi: r = ln(o'lchov / (daraja × LUR)), Gauss ℓ = 3 km, shrinkage p = 0.5.
   // Leave-one-out (11 stansiya, 2026-07…10): MAE LUR'ga nisbatan −8% (PM2.5 6.14→5.66, PM10 26.7→24.4).
   const RES_L_KM = 3, RES_PRIOR = 0.5, MIN_OBS = 1;    // MIN_OBS: <1 µg/m³ — sensor noli, hisobga olinmaydi
@@ -209,7 +209,7 @@
       }
     } catch (e) { console.warn("prognoz", e); }
     const T = { p, Hh, W, fac, frames, st, stf, stInfo, mask: boundary ? buildMask(p, Hh, W, boundary) : null,
-                cityBB: boundary ? geoBounds(boundary) : null };
+                cityBB: boundary ? geoBounds(boundary) : null, boundary };
     T.facD = smoothFactors(T);
     // Har bir kadr uchun stansiya qoldiqlari (log): kuzatuvda — o'lchovdan, prognozda — stansiyaning o'z prognozidan
     for (const f of frames) {
@@ -567,6 +567,16 @@
   }
 
   // ---------- xarita ----------
+  // Shahar chegarasi chizig'i (faqat Toshkent rejimida); xarita canvasida bo'lgani uchun PNG/videoga ham tushadi
+  function cityLine(show, gj) {
+    if (show && gj && !map.getSource("city")) {
+      map.addSource("city", { type: "geojson", data: gj });
+      const before = map.getLayer("uz-mask") ? "uz-mask" : undefined;
+      map.addLayer({ id: "city-halo", type: "line", source: "city", paint: { "line-color": "#ffffff", "line-width": 4.5, "line-opacity": 0.9 } }, before);
+      map.addLayer({ id: "city-line", type: "line", source: "city", paint: { "line-color": "#1d3557", "line-width": 1.8 } }, before);
+    }
+    for (const id of ["city-halo", "city-line"]) if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", show ? "visible" : "none");
+  }
   function setRaster(img) {
     const src = map.getSource("aq");
     if (src) { src.updateImage({ url: img.url, coordinates: img.coords }); return; }
@@ -583,11 +593,12 @@
         S.frames = T.frames.map((f) => f.t);
         S.step = S.t != null ? nearest(S.frames, S.t) : Math.min(S.step, S.frames.length - 1);
         setRaster(renderTashkent(T, S.v, S.step));
+        cityLine(true, T.boundary);
         renderStations(T, S.v, S.step);
         const f = T.frames[S.step];
         $("maptime").textContent = `${fmtT(f.t)} · ${f.kind === "prognoz" ? "prognoz" : "kuzatuv"}`;
       } else {
-        hideStations();
+        hideStations(); cityLine(false);
         const M = await loadModel(S.mode);
         await modelVar(M, S.v);
         S.frames = M.times;
@@ -653,7 +664,7 @@
         `koeffitsiyentiga tayanadi (taxminiy). Ranglar toifalar orasida silliq o'tadi. Koeffitsiyent o'rta ko'chalargacha (OSM secondary/tertiary) masofaga bog'liq: ` +
         `ko'cha yonida yuqori, ~150 m da fonga tushadi (LUR, 11 stansiya` +
         (pp && nul ? `, xatoni ${(100 * (1 - pp.loo_rmse / nul)).toFixed(0)}% kamaytiradi` : "") +
-        `). Shahar chegarasidan tashqarida ${BUFFER_M / 1000} km davomida asta so'nadi.`;
+        `). Faqat Toshkent shahri hududi ko'rsatiladi.`;
     } else if (M) {
       info = `<b>${M.meta.source}</b><br>Ishga tushirish: ${M.meta.run} UTC.` +
         (["no2", "so2", "o3", "co"].includes(S.v)
