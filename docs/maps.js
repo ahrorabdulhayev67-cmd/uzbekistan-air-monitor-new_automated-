@@ -39,6 +39,12 @@
   const RES_CAP = Math.log(2);
   // Ishonchlilik: stansiyadan 6 km gacha to'liq rang, 12 km da shaffof (ℓ = 3 km: 2ℓ da og'irlik 0.14 ga tushadi)
   const FADE_KM = [6, 12];
+  // Shahar chegarasi bo'lsa: shahar ichida to'liq ko'rsatiladi, tashqarida BUFFER_M davomida silliq so'nadi
+  // (stansiyadan uzoqlik bo'yicha so'nish faqat chegara fayli bo'lmaganda ishlatiladi).
+  const CITY_FADE_STEPS = 8;
+  // Faqat ko'rinish: rang toifa o'rtalari orasida chiziqli o'tadi (toifa o'rtasida — legendadagi rang).
+  const SMOOTH_COLORS = true;
+  const VIDEO_MAX_W = 1280;                            // video kengligi (piksel), juft songa yaxlitlanadi
   const levFor = (v) => (S.mode === "tashkent" ? TASH_LEVELS[v] : LEVELS[v]);                                   // qatlam shaffofligi (0–255)
 
   const S = { mode: "silam", v: "pm25", step: 0, t: null, corr: true, playing: null, frames: [] };
@@ -55,6 +61,18 @@
   const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
   const PALRGB = PAL.map(hex);
   function classify(v, lev) { if (!(v >= 0)) return -1; let i = 0; while (i < lev.length - 1 && v >= lev[i + 1]) i++; return i; }
+  // Pikselga rang yozish: SMOOTH_COLORS — toifa o'rtalari orasida chiziqli aralashma, aks holda diskret toifa
+  function paintColor(d, p, v, lev) {
+    if (!(v >= 0)) return false;
+    const n = lev.length;
+    if (!SMOOTH_COLORS) { const c = PALRGB[classify(v, lev)]; d[p] = c[0]; d[p + 1] = c[1]; d[p + 2] = c[2]; return true; }
+    const mid = (i) => (i < n - 1 ? (lev[i] + lev[i + 1]) / 2 : lev[n - 1] * 1.25);
+    let i = 0; while (i < n - 1 && v > mid(i + 1)) i++;
+    const a = PALRGB[i], b = PALRGB[Math.min(i + 1, n - 1)];
+    const t = i >= n - 1 ? 0 : Math.max(0, Math.min(1, (v - mid(i)) / (mid(i + 1) - mid(i))));
+    d[p] = a[0] + (b[0] - a[0]) * t; d[p + 1] = a[1] + (b[1] - a[1]) * t; d[p + 2] = a[2] + (b[2] - a[2]) * t;
+    return true;
+  }
   async function getJSON(u) { const r = await fetch(u, { cache: "no-cache" }); if (!r.ok) throw new Error(`${u}: ${r.status}`); return r.json(); }
   async function getU16(u) { const r = await fetch(u, { cache: "no-cache" }); if (!r.ok) throw new Error(`${u}: ${r.status}`); return new Uint16Array(await r.arrayBuffer()); }
   async function q(table, params) {
@@ -190,7 +208,8 @@
         frames.push(...fr.filter((f) => f.pm25 != null && f.pm10 != null));
       }
     } catch (e) { console.warn("prognoz", e); }
-    const T = { p, Hh, W, fac, frames, st, stf, stInfo, mask: boundary ? buildMask(p, Hh, W, boundary) : null };
+    const T = { p, Hh, W, fac, frames, st, stf, stInfo, mask: boundary ? buildMask(p, Hh, W, boundary) : null,
+                cityBB: boundary ? geoBounds(boundary) : null };
     T.facD = smoothFactors(T);
     // Har bir kadr uchun stansiya qoldiqlari (log): kuzatuvda — o'lchovdan, prognozda — stansiyaning o'z prognozidan
     for (const f of frames) {
@@ -210,27 +229,43 @@
     cache.tash = T;
     return cache.tash;
   }
-  // Shahar chegarasi + BUFFER_M: niqob (1 = ko'rsatiladi). Chegaradan uzoqda model ishonchsiz (stansiyalar yo'q).
+  // GeoJSON chegarasining qutisi [[g'arb, janub], [sharq, shimol]] — xaritani shaharga moslab ochish uchun
+  function geoBounds(gj) {
+    let a = 180, b = 90, c = -180, d = -90;
+    const walk = (x) => { if (typeof x[0] === "number") { a = Math.min(a, x[0]); c = Math.max(c, x[0]); b = Math.min(b, x[1]); d = Math.max(d, x[1]); } else x.forEach(walk); };
+    for (const ft of gj.features || [gj]) { const g = ft.geometry || ft; if (g && g.coordinates) walk(g.coordinates); }
+    return a < c ? [[a, b], [c, d]] : null;
+  }
+  // Niqob (Float32, 0…1): shahar ichida 1; chegaradan tashqarida BUFFER_M davomida CITY_FADE_STEPS pog'onada 1 → 0.
   function buildMask(p, Hh, W, gj) {
     const [w, s, e, n] = p.bbox, cv = document.createElement("canvas"); cv.width = W; cv.height = Hh;
-    const ctx = cv.getContext("2d"), px = (lon, lat) => [((lon - w) / (e - w)) * W, ((n - lat) / (n - s)) * Hh];
+    const ctx = cv.getContext("2d", { willReadFrequently: true }), px = (lon, lat) => [((lon - w) / (e - w)) * W, ((n - lat) / (n - s)) * Hh];
     const mPerPx = ((e - w) / W) * 111320 * Math.cos(((s + n) / 2) * Math.PI / 180);
-    ctx.fillStyle = ctx.strokeStyle = "#000"; ctx.lineJoin = ctx.lineCap = "round"; ctx.lineWidth = (2 * BUFFER_M) / mPerPx;
     const polys = [];
     for (const ft of gj.features || [gj]) {
       const g = ft.geometry || ft;
       if (g.type === "Polygon") polys.push(g.coordinates); else if (g.type === "MultiPolygon") polys.push(...g.coordinates);
     }
-    for (const poly of polys) {
-      ctx.beginPath();
-      for (const ring of poly) ring.forEach(([lo, la], k) => { const [x, y] = px(lo, la); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-      ctx.closePath(); ctx.fill("evenodd"); ctx.stroke();
-    }
-    const a = ctx.getImageData(0, 0, W, Hh).data, m = new Uint8Array(W * Hh);
+    if (!polys.length) { console.warn("Chegara faylida Polygon/MultiPolygon yo'q — niqobsiz ko'rsatiladi"); return null; }
+    const layer = (bufM) => {
+      ctx.clearRect(0, 0, W, Hh); ctx.fillStyle = ctx.strokeStyle = "#000"; ctx.lineJoin = ctx.lineCap = "round";
+      ctx.lineWidth = Math.max(0.01, (2 * bufM) / mPerPx);
+      for (const poly of polys) {
+        ctx.beginPath();
+        for (const ring of poly) ring.forEach(([lo, la], k) => { const [x, y] = px(lo, la); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+        ctx.closePath(); ctx.fill("evenodd"); if (bufM > 0) ctx.stroke();
+      }
+      return ctx.getImageData(0, 0, W, Hh).data;
+    };
+    const A = new Float32Array(W * Hh), core = layer(0);
     let on = 0;
-    for (let k = 0; k < m.length; k++) { m[k] = a[k * 4 + 3] > 0 ? 1 : 0; on += m[k]; }
-    if (on < m.length * 0.01) { console.warn("Chegara niqobi bo'sh (koordinatalar lon/lat emasmi?) — niqobsiz ko'rsatiladi"); return null; }
-    return m;
+    for (let k = 0; k < A.length; k++) if (core[k * 4 + 3] > 127) { A[k] = 1; on++; }
+    if (on < A.length * 0.01) { console.warn("Chegara niqobi bo'sh (koordinatalar lon/lat emasmi?) — niqobsiz ko'rsatiladi"); return null; }
+    for (let j = 1; j <= CITY_FADE_STEPS; j++) {
+      const a = layer((BUFFER_M * j) / CITY_FADE_STEPS), wgt = 1 - (j - 0.5) / CITY_FADE_STEPS;
+      for (let k = 0; k < A.length; k++) if (A[k] === 0 && a[k * 4 + 3] > 127) A[k] = wgt;
+    }
+    return A;
   }
 
   const gridAt = (T, A, lng, lat) => {
@@ -312,10 +347,13 @@
     m.onclick = (e) => { if (e.target === m || e.target.tagName === "BUTTON") m.remove(); };
     document.body.appendChild(m);
   }
-  async function exportPNG() {
-    const btn = $("dl-btn"); if (btn) btn.disabled = true;
-    try {
-      await new Promise((res) => { map.once("idle", res); map.triggerRepaint(); setTimeout(res, 4000); });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const mapIdle = () => new Promise((res) => {
+    let done = false; const f = () => { if (!done) { done = true; res(); } };
+    map.once("idle", f); map.triggerRepaint(); setTimeout(f, 4000);
+  });
+  // Joriy kadr: sarlavha + xarita + stansiyalar + shkala + manbalar (PNG va video uchun umumiy)
+  function composeFrame() {
       const mc = map.getCanvas(), dpr = mc.width / mc.clientWidth, Wd = mc.width, Mh = mc.height, P = 16 * dpr;
       const head = Math.round(62 * dpr), foot = Math.round(100 * dpr);
       const cv = document.createElement("canvas"); cv.width = Wd; cv.height = head + Mh + foot;
@@ -346,6 +384,13 @@
                                         : (S.mode === "silam" ? "FMI SILAM (CC BY 4.0)" : "Copernicus CAMS");
       x.fillText(`Manba: ${src} · Asos xarita: © OpenFreeMap © OpenStreetMap`, P, y0 + 50 * dpr);
       x.fillText(`Yaratildi: ${fmtT(Date.now())} (Toshkent vaqti) · Toshkent havo sifati`, P, y0 + 68 * dpr);
+      return cv;
+  }
+  async function exportPNG() {
+    const btn = $("dl-btn"); if (btn) btn.disabled = true;
+    try {
+      await mapIdle();
+      const cv = composeFrame();
       const name = `toshkent_havo_${S.mode}_${S.v}_${$("maptime").textContent.replace(/[^0-9A-Za-z]+/g, "_")}.png`;
       const tg = window.Telegram && window.Telegram.WebApp;
       if (tg && tg.initData) { showImageModal(cv.toDataURL("image/png")); return; }   // Telegram ichida to'g'ridan-to'g'ri yuklab bo'lmaydi
@@ -354,6 +399,59 @@
       document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     } catch (e) { console.warn("PNG", e); banner("Rasmni yaratib bo'lmadi: " + e.message); }
     finally { if (btn) btn.disabled = false; }
+  }
+
+  // ---------- Video: barcha kadrlar ketma-ket (MP4, qo'llanmasa WebM) ----------
+  function showVideoModal(url) {
+    const m = document.createElement("div");
+    m.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:9999;display:flex;flex-direction:column;" +
+      "align-items:center;justify-content:center;padding:16px;gap:12px";
+    m.innerHTML = `<video src="${url}" controls autoplay loop muted playsinline style="max-width:100%;max-height:76vh;border-radius:8px;background:#fff"></video>` +
+      `<div style="color:#fff;font:14px Inter,sans-serif;text-align:center">Telegram ichida faylni saqlab bo'lmaydi — saytni brauzerda ochib yuklab oling</div>` +
+      `<button type="button" style="padding:8px 18px;border-radius:9px;border:0;font:600 14px Inter,sans-serif;cursor:pointer">Yopish</button>`;
+    m.onclick = (e) => { if (e.target === m || e.target.tagName === "BUTTON") m.remove(); };
+    document.body.appendChild(m);
+  }
+  async function exportVideo() {
+    const btn = $("vid-btn"); if (!btn || btn.disabled) return;
+    if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) {
+      banner("Bu brauzer video yozishni qo'llab-quvvatlamaydi (Chrome, Edge yoki Safari'da oching)."); return;
+    }
+    if (S.playing) togglePlay();
+    const mime = ["video/mp4;codecs=avc1.42E01E", "video/mp4", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"]
+      .find((t) => MediaRecorder.isTypeSupported(t)) || "";
+    const ext = mime.startsWith("video/mp4") ? "mp4" : "webm";
+    const keep = S.step, n = S.frames.length, frameMs = Math.max(250, +$("speed").value || 700);
+    const dlb = $("dl-btn"); btn.disabled = true; if (dlb) dlb.disabled = true;
+    const goto = async (i) => { S.step = i; S.t = S.frames[i]; await draw(); await mapIdle(); };
+    try {
+      await goto(0);
+      const f0 = composeFrame(), sc = Math.min(1, VIDEO_MAX_W / f0.width), out = document.createElement("canvas");
+      out.width = 2 * Math.round((f0.width * sc) / 2); out.height = 2 * Math.round((f0.height * sc) / 2);
+      const ox = out.getContext("2d");
+      const paint = (c) => { ox.fillStyle = "#ffffff"; ox.fillRect(0, 0, out.width, out.height); ox.drawImage(c, 0, 0, out.width, out.height); };
+      paint(f0);
+      const rec = new MediaRecorder(out.captureStream(25), { ...(mime ? { mimeType: mime } : {}), videoBitsPerSecond: 6e6 });
+      const chunks = []; rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      const stopped = new Promise((r) => (rec.onstop = r));
+      rec.start(1000);
+      for (let i = 0; i < n; i++) {
+        if (i > 0) { rec.pause(); await goto(i); paint(composeFrame()); await sleep(80); rec.resume(); }   // hisoblash vaqti videoga kirmaydi
+        btn.textContent = `Video ${i + 1}/${n}`;
+        await sleep(i === n - 1 ? 2 * frameMs : frameMs);
+      }
+      rec.stop(); await stopped;
+      const blob = new Blob(chunks, { type: mime || "video/webm" });
+      const name = `toshkent_havo_${S.mode}_${S.v}_${fmtT(S.frames[0]).replace(/[^0-9]+/g, "")}_${n}soat.${ext}`;
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg && tg.initData) { showVideoModal(URL.createObjectURL(blob)); return; }
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    } catch (e) { console.warn("Video", e); banner("Videoni yaratib bo'lmadi: " + e.message); }
+    finally {
+      btn.disabled = false; btn.textContent = "⤓ Video"; if (dlb) dlb.disabled = false;
+      try { await goto(keep); } catch (e) { /* e'tiborsiz */ }
+    }
   }
 
   // Nuqtadagi qoldiq (nuqta grafigi uchun): xuddi shu formula
@@ -374,13 +472,14 @@
     const ctx = cv.getContext("2d"), img = ctx.createImageData(T.W, T.Hh), d = img.data;
     const Wg = stationWeights(T), R = (f.resD && f.resD[v]) || new Map();
     const ids = [...R.keys()].filter((id) => Wg.has(id)), ws = ids.map((id) => Wg.get(id)), rs = ids.map((id) => R.get(id));
-    const FD = fadeGrid(T);
+    const FD = T.mask || fadeGrid(T);                    // chegara bor: shahar ichida 1, tashqarida 2 km da 0
     for (let k = 0; k < F.length; k++) {
-      if (F[k] <= 0 || (T.mask && !T.mask[k]) || FD[k] <= 0) continue;
+      if (F[k] <= 0 || FD[k] <= 0) continue;
       let num = 0, den = RES_PRIOR;
       for (let j = 0; j < ws.length; j++) { const wj = ws[j][k]; num += wj * rs[j]; den += wj; }
-      const c = classify(level * F[k] * Math.exp(num / den), lev); if (c < 0) continue;
-      const rgb = PALRGB[c], p = k * 4; d[p] = rgb[0]; d[p + 1] = rgb[1]; d[p + 2] = rgb[2]; d[p + 3] = Math.round(ALPHA * FD[k]);
+      const p = k * 4;
+      if (!paintColor(d, p, level * F[k] * Math.exp(num / den), lev)) continue;
+      d[p + 3] = Math.round(ALPHA * FD[k]);
     }
     ctx.putImageData(img, 0, 0);
     const [w, s, e, n] = T.p.bbox;
@@ -550,11 +649,11 @@
         `stansiyalar o'lchovlarining medianasi, kelajakda stansiyalar bo'yicha V8.1 ansambl prognozlarining medianasi. ` +
         `Stansiya tuzatmasi: har bir stansiyadagi o'lchov (prognoz) va model farqi ~${RES_L_KM} km radiusda yoyiladi — ` +
         `xarita stansiyalar yonida ularning qiymatiga yaqinlashadi. Ko'cha ta'siri xaritada ~${DISPLAY_SMOOTH_M} m bo'yicha silliqlangan ` +
-        `(mahalla darajasi); nuqtaga bosilganda — aniq 100 m qiymat. Stansiyalardan ${FADE_KM[0]} km dan uzoqda rang xiralashadi, ` +
-        `${FADE_KM[1]} km dan keyin ko'rsatilmaydi (o'lchov yo'q — baho ishonchsiz). Koeffitsiyent o'rta ko'chalargacha (OSM secondary/tertiary) masofaga bog'liq: ` +
+        `(mahalla darajasi); nuqtaga bosilganda — aniq 100 m qiymat. Shahar hududi to'liq ko'rsatiladi; stansiyalardan uzoq tumanlarda qiymat shahar darajasi va ko'cha ` +
+        `koeffitsiyentiga tayanadi (taxminiy). Ranglar toifalar orasida silliq o'tadi. Koeffitsiyent o'rta ko'chalargacha (OSM secondary/tertiary) masofaga bog'liq: ` +
         `ko'cha yonida yuqori, ~150 m da fonga tushadi (LUR, 11 stansiya` +
         (pp && nul ? `, xatoni ${(100 * (1 - pp.loo_rmse / nul)).toFixed(0)}% kamaytiradi` : "") +
-        `). Shahar chegarasidan ${BUFFER_M / 1000} km gacha ko'rsatiladi; stansiyalardan uzoqda qiymatlar taxminiy.`;
+        `). Shahar chegarasidan tashqarida ${BUFFER_M / 1000} km davomida asta so'nadi.`;
     } else if (M) {
       info = `<b>${M.meta.source}</b><br>Ishga tushirish: ${M.meta.run} UTC.` +
         (["no2", "so2", "o3", "co"].includes(S.v)
@@ -633,6 +732,10 @@
       const b = document.createElement("button");
       b.id = "dl-btn"; b.type = "button"; b.className = "dl-btn"; b.textContent = "⤓ PNG";
       b.title = "Joriy xaritani rasm (PNG) sifatida yuklab olish"; b.onclick = exportPNG; tb.appendChild(b);
+      const vb = document.createElement("button");
+      vb.id = "vid-btn"; vb.type = "button"; vb.className = "dl-btn"; vb.textContent = "⤓ Video";
+      vb.title = "Barcha soatlarni animatsiya (video) sifatida yuklab olish. Yozish davomida sahifani ochiq qoldiring.";
+      vb.onclick = exportVideo; tb.appendChild(vb);
     }
     document.querySelectorAll("#mode button").forEach((b) => b.onclick = () => {
       document.querySelectorAll("#mode button").forEach((x) => x.classList.toggle("on", x === b));
@@ -641,7 +744,7 @@
       if (S.mode === "tashkent" && prev !== "tashkent") {
         S.step = 0;
         loadTashkent().then((T) => {
-          const [w, s, e, n] = T.p.bbox; map.fitBounds([[w, s], [e, n]], { padding: 20 });
+          const [w, s, e, n] = T.p.bbox; map.fitBounds(T.cityBB || [[w, s], [e, n]], { padding: 24 });
           S.t = Date.now() - H; draw();
         }).catch(() => draw());
         return;
