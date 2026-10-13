@@ -39,13 +39,17 @@ SUBTITLE = "Noqulay meteorologik sharoitlar — NMSH (rus. неблагопри�
 def fetch(lat, lon, past_days=31, forecast_days=3):
     prm = dict(latitude=",".join(f"{x:.2f}" for x in lat), longitude=",".join(f"{x:.2f}" for x in lon),
                timezone="Asia/Tashkent", past_days=past_days, forecast_days=forecast_days, wind_speed_unit="ms", hourly=HOURLY)
+    last = None
     for k in range(6):
-        r = requests.get(URL, params=prm, timeout=180)
+        try:
+            r = requests.get(URL, params=prm, timeout=300)
+        except requests.exceptions.RequestException as e:      # timeout / uzilish — kutib qayta urinish
+            last = e; time.sleep(15 * (k + 1)); continue
         if r.status_code == 429:
             time.sleep(20 * (k + 1)); continue
         r.raise_for_status(); js = r.json()
         return js if isinstance(js, list) else [js]
-    raise RuntimeError("Open-Meteo: 429 takrorlandi")
+    raise RuntimeError(f"Open-Meteo: javob olinmadi ({last!r})")
 
 
 def hourly_frame(j):
@@ -76,8 +80,8 @@ def grid_assessment(KP, days, uzb):
     G = pd.DataFrame([(la, lo) for la in LAT for lo in LON], columns=["lat", "lon"])
     G = G[[poly.contains(Point(lo, la)) for la, lo in zip(G.lat, G.lon)]].reset_index(drop=True)
     recs = []
-    for i in range(0, len(G), 50):
-        b = G.iloc[i:i + 50]
+    for i in range(0, len(G), 25):
+        b = G.iloc[i:i + 25]
         for (_, p), j in zip(b.iterrows(), fetch(b.lat.values, b.lon.values)):
             d = daily_feats(hourly_frame(j))
             for day in days:
@@ -218,18 +222,21 @@ def make_all(sb, MODEL, today, now, pm_prev, rows, prob, daraja):
     except Exception as e:
         print("PM2.5 qatlami:", repr(e))
 
-    panel = draw_panel(W, now_h, info, pf, ob)
-    R, LAT, LON = grid_assessment(KP, days, uzb)
-    karta = draw_map(R, LAT, LON, days, KP, adm1, uzb, outside, tash_txt)
-
     st = sb.storage.from_("maps"); opts = {"content-type": "image/png", "cache-control": "300", "upsert": "true"}
     stamp = f"{today:%Y-%m-%d}"
-    for nm, data in [("karta", karta), ("panel", panel)]:
+    def put(nm, data):
         st.upload(f"nmsh/latest/{nm}.png", data, opts)
         st.upload(f"nmsh/arxiv/{stamp}_{nm}.png", data, opts)
+    put("panel", draw_panel(W, now_h, info, pf, ob)); print("Panel yuklandi")      # karta muvaffaqiyatsiz bo'lsa ham
+    kat = {}
+    try:
+        R, LAT, LON = grid_assessment(KP, days, uzb)
+        put("karta", draw_map(R, LAT, LON, days, KP, adm1, uzb, outside, tash_txt)); print("Karta yuklandi")
+        kat = {str(d.date()): int((R[R.kun == d].k >= KP["k"]).sum()) for d in days}
+    except Exception as e:
+        print("Karta xatosi:", repr(e))
     meta = dict(issue_date=stamp, yaratildi=str(pd.Timestamp(now)), model=MODEL["versiya"],
-                kunlar={str(k.date()): v["daraja"] for k, v in info.items() if v["daraja"]},
-                nmsh_kataklar={str(d.date()): int((R[R.kun == d].k >= KP["k"]).sum()) for d in days})
+                kunlar={str(k.date()): v["daraja"] for k, v in info.items() if v["daraja"]}, nmsh_kataklar=kat)
     st.upload("nmsh/latest/meta.json", json.dumps(meta, ensure_ascii=False).encode("utf-8"),
               {"content-type": "application/json", "cache-control": "300", "upsert": "true"})
     print("Grafika yuklandi:", meta)
