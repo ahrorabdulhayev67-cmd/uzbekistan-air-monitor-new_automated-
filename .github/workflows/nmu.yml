@@ -6,12 +6,13 @@ on:
 jobs:
   nmu:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install requests pandas numpy supabase
+      - run: pip install requests pandas numpy supabase matplotlib geopandas shapely pyogrio
       - run: python v81/nmu_daily.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

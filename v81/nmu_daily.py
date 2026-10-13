@@ -98,6 +98,13 @@ def main():
         print(f"{r['target_date']} (+{r['lead_days']}): {r['daraja']:30s} komplekslar {r['komplekslar']}/4, "
               f"P(>60)={r['p_rek1']:.0%}, P(>120)={r['p_rek2']:.0%}")
 
+    # 2b) grafika: respublika kartasi va Toshkent paneli → storage maps/nmsh/
+    try:
+        import nmsh_graphics
+        nmsh_graphics.make_all(sb, MODEL, today, now, pm_prev, rows, prob, daraja)
+    except Exception as e:
+        print("Grafika xatosi (jadval yozildi):", repr(e))
+
     # 3) tekshiruv: o'tgan kunlar, kuzatuv hali yozilmagan
     old = (sb.table("nmu_daily").select("issue_date,target_date").is_("obs_pm25", "null")
              .lt("target_date", str(today.date())).limit(200).execute().data)
