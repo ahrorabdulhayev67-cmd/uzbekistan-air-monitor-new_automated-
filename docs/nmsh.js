@@ -39,13 +39,13 @@
       <a id="nm-a-karta" target="_blank" rel="noopener"><img id="nm-karta" alt="NMSH prognozi kartasi" loading="lazy"></a>
     </div>
     <p class="muted small nm-ver" id="nm-ver"></p>
-    <p class="muted small">NMSH — ifloslantiruvchi moddalarning yer yuzasida to'planishiga olib keladigan ob-havo: shamolsizlik,
+    <p class="muted small">NMSH — ifloslantiruvchi moddalarning yer yuzasida to'planishiga olib keladigan ob-havo: kuchsiz shamol yoki shtil,
       aralashish qatlamining pastligi, inversiya, antitsiklon. Metodika RD 52.04.52-85 asosida moslashtirilgan; REK oshishi
       ehtimoli 2021–2026 yillar ma'lumotlari bo'yicha hisoblanadi. Sinov rejimi.</p>`;
   const anchor = document.getElementById("explain-card");
   if (anchor) anchor.after(card); else (document.querySelector("main") || document.body).appendChild(card);
 
-  const K = [["k_shamol", "shamolsizlik"], ["k_qatlam", "past aralashish qatlami"], ["k_barq", "inversiya"], ["k_bosim", "antitsiklon"]];
+  const K = [["k_shamol", "kuchsiz shamol (< 1,5 m/s)"], ["k_qatlam", "past aralashish qatlami"], ["k_barq", "inversiya"], ["k_bosim", "antitsiklon"]];
   function dayBlock(r, title) {
     const on = K.filter(([k]) => r[k]).map(([, n]) => n);
     const lvl = r.daraja === "Yo'q" ? "NMSH kutilmaydi" : r.daraja;
@@ -75,7 +75,8 @@
       body.innerHTML = `<div class="nm-grid">${cur.map((r) => dayBlock(r, r.lead_days === 1 ? "Ertaga" : "Indinga")).join("")}</div>`;
       for (const nm of ["panel", "karta"]) {
         const u = `${PUB}/${nm}.png?d=${iss}`;
-        document.getElementById(`nm-${nm}`).src = u; document.getElementById(`nm-a-${nm}`).href = u;
+        const im = document.getElementById(`nm-${nm}`), an = document.getElementById(`nm-a-${nm}`);
+        an.style.display = ""; im.onerror = () => { an.style.display = "none"; }; im.src = u; an.href = u;
       }
       const ver = await q([["select", "target_date,daraja,p_rek1,obs_pm25"], ["obs_pm25", "not.is.null"], ["lead_days", "eq.1"],
                            ["order", "target_date.desc"], ["limit", "1"]]);
