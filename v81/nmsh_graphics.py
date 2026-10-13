@@ -165,7 +165,6 @@ def draw_map(R, days, KP, adm1, uzb, outside, issued):
                handlelength=1.6, columnspacing=2.2)
     fig.suptitle("Noqulay meteorologik sharoitlar (NMSH) prognozi", x=0.02, y=0.985, ha="left", fontsize=17, color=INK, weight="bold")
     fig.text(0.02, 0.925, f"rus. неблагоприятные метеорологические условия (НМУ)   ·   baho: {issued}", fontsize=10, color=MUTED)
-    fig.text(0.98, 0.012, "O'zgidromet · ob-havo prognozi: Open-Meteo", ha="right", fontsize=8.5, color=MUTED)
     plt.subplots_adjust(left=0.02, right=0.98, top=0.86, bottom=0.11, wspace=0.04)
     return _png(fig)
 
@@ -220,8 +219,7 @@ def draw_panel(W, now_h, day_info, pf, ob, issued):
     a2.xaxis.set_major_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
     a2.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M\n%d.%m")); a2.set_xlim(x0, x1)
     fig.suptitle("Toshkent: noqulay meteorologik sharoitlar, 72 soat", x=0.07, y=0.985, ha="left", fontsize=16, color=INK, weight="bold")
-    fig.text(0.07, 0.945, f"baho: {issued}   ·   ventilatsiya = aralashish qatlami × shamol", fontsize=10, color=MUTED)
-    fig.text(0.98, 0.012, "O'zgidromet · ob-havo prognozi: Open-Meteo · PM2.5: V8.1 ansambl", ha="right", fontsize=8.5, color=MUTED)
+    fig.text(0.07, 0.945, f"baho: {issued}", fontsize=10, color=MUTED)
     fig.subplots_adjust(top=0.91, bottom=0.08)
     return _png(fig)
 
