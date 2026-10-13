@@ -241,12 +241,12 @@ def make_all(sb, MODEL, today, now, pm_prev, rows, prob, daraja):
 
     W = hourly_frame(fetch([TASH[0]], [TASH[1]])[0]); dT = daily_feats(W)
     now_h = pd.Timestamp(now).floor("h"); info = {}
-    short = {"NMSH 2-daraja": "NMSH 2-daraja", "NMSH 1-daraja": "NMSH 1-daraja", "Yo'q": "NMSH yo'q"}
+    short = {"NMSH 2-daraja": "NMSH 2-daraja", "NMSH 1-daraja": "NMSH 1-daraja", "Yo'q": "NMSH yo'q", "NMSH xavfi": "NMSH xavfi"}
     for dday in sorted(set(dT.index)):
         if dday < today or dday > today + pd.Timedelta(days=3) or dT.loc[dday].isna().any(): continue
         k = sum(flags(dT.loc[dday], KP)); r = by_day.get(dday)
         if r:
-            lvl = short.get(r["daraja"], "Noqulay sharoit")
+            lvl = short.get(r["daraja"], "NMSH xavfi")
             info[dday] = dict(daraja=r["daraja"], k=k, kmin=KP["k"], qisqa=f"{dday:%d.%m}  ·  {lvl}  ·  REK ehtimoli {r['p_rek1']:.0%}")
         else:
             info[dday] = dict(daraja="", k=k, kmin=KP["k"], qisqa=f"{dday:%d.%m}")

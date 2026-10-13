@@ -4,7 +4,8 @@ Kundalik baho, 1-versiya.
 Metodika RD 52.04.52-85 asosida moslashtirilgan:
   * meteorologik komplekslar: shamol, aralashish qatlami, tonggi barqarorlik (T850 - T2m + 9.8), bosim anomaliyasi;
   * REK oshishi ehtimoli: logistik model (nmu_model.json), 2021-2026 shahar PM2.5 qatori bo'yicha o'qitilgan;
-  * 1-daraja: >=k kompleks va P(PM2.5 > 60) >= 0.3;  2-daraja: P(PM2.5 > 120) >= 0.4 (2 REK; Toshkentda 3 REK sutkalik deyarli uchramaydi).
+  * 1-daraja: >=k kompleks va P(PM2.5 > 60) >= 0.3;  2-daraja: P(PM2.5 > 120) >= 0.4 (2 REK; Toshkentda 3 REK sutkalik deyarli uchramaydi);
+  * NMSH xavfi: >=k kompleks, lekin P(PM2.5 > 60) < 0.3 (sharoit noqulay, NMSH e'lon qilinmaydi).
 Har kuni ertangi va indingi kun uchun baho yoziladi; o'tgan kunlar kuzatuv bilan tekshiriladi.
 """
 import os, json
@@ -59,7 +60,7 @@ def prob(x, target):
 def daraja(k, p1, p2):
     if p2 >= P2_THR: return "NMSH 2-daraja"
     if k >= KP["k"] and p1 >= P1_THR: return "NMSH 1-daraja"
-    if k >= KP["k"]: return "Noqulay meteorologik sharoit (NMSH 1-darajasiz)"
+    if k >= KP["k"]: return "NMSH xavfi"
     return "Yo'q"
 
 
