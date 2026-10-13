@@ -2,7 +2,7 @@
 
 Har kecha: kechagacha bo'lgan, hali arxivlanmagan kunlar Storage'dagi oylik Parquet (zstd) fayliga qo'shiladi,
 fayl qayta yuklab tekshiriladi va manifest.json ga yoziladi; faqat shundan keyin bazadan tozalanadi:
-  Ensemble — RETAIN_ENS kun (14), boshqa modellar — RETAIN_OTHER kun (5), DROP_MODELS — arxivdan keyin darhol.
+  Ensemble — RETAIN_ENS kun (14), boshqa modellar — RETAIN_OTHER kun (5), DROP_MODELS — boshqa modellar kabi (v81_verify oynasi uchun).
 v81_verify oxirgi 3 mahalliy kunni nishon vaqti bo'yicha qayta hisoblaydi (lead <= 24 soat) — 5 kun zaxira bilan yetarli.
 """
 import os, io, sys, json, time, logging
@@ -107,7 +107,7 @@ def archive_day(sb, st, d, man):
 
 def clean_day(sb, st, key, man, today):
     d = pd.Timestamp(key, tz="UTC"); age = (today - d).days
-    need = "all" if age > RETAIN_ENS else "other" if age > RETAIN_OTHER else "drop"
+    need = "all" if age > RETAIN_ENS else "other" if age > RETAIN_OTHER else "none"
     if LVL[man[key].get("level", "none")] >= LVL[need]:
         return
     for h in range(24):
