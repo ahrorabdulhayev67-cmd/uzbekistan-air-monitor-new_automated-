@@ -1,4 +1,5 @@
-"""NMU (noqulay meteorologik sharoit) — kundalik baho, 1-versiya.
+"""Noqulay meteorologik sharoitlar — NMSH (rus. неблагоприятные метеорологические условия, НМУ).
+Kundalik baho, 1-versiya.
 
 Metodika RD 52.04.52-85 asosida moslashtirilgan:
   * meteorologik komplekslar: shamol, aralashish qatlami, tonggi barqarorlik (T850 - T2m + 9.8), bosim anomaliyasi;
@@ -56,9 +57,9 @@ def prob(x, target):
 
 
 def daraja(k, p1, p2):
-    if p2 >= P2_THR: return "NMU 2-daraja"
-    if k >= KP["k"] and p1 >= P1_THR: return "NMU 1-daraja"
-    if k >= KP["k"]: return "Noqulay meteorologik sharoit"
+    if p2 >= P2_THR: return "NMSH 2-daraja"
+    if k >= KP["k"] and p1 >= P1_THR: return "NMSH 1-daraja"
+    if k >= KP["k"]: return "Noqulay meteorologik sharoit (NMSH 1-darajasiz)"
     return "Yo'q"
 
 

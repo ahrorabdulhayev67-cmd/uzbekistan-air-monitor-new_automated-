@@ -1,4 +1,4 @@
-name: nmu-daily
+name: nmsh-daily  # Noqulay meteorologik sharoitlar (НМУ)
 on:
   schedule:
     - cron: "7 11 * * *"        # 16:07 Toshkent vaqti
@@ -7,8 +7,8 @@ jobs:
   nmu:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install requests pandas numpy supabase
