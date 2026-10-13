@@ -1,7 +1,9 @@
-"""NMSH grafikasi: respublika kartasi va Toshkent 72 soatlik paneli (nmu_daily.py chaqiradi).
+"""NMSH grafikasi (2-versiya): respublika kartasi va Toshkent 72 soatlik paneli.
 
 Noqulay meteorologik sharoitlar — NMSH (rus. неблагоприятные метеорологические условия, НМУ).
-Rasmlar Supabase storage'ga yuklanadi: maps/nmsh/latest/{karta,panel}.png va maps/nmsh/arxiv/.
+Kartada komplekslar "yumshoq" ko'rinishda (har bir shart chegaraga yaqinligi bo'yicha 0…1) qo'shiladi,
+0.5° to'rdan 0.05° ga interpolyatsiya qilinib silliqlanadi va O'zbekiston chegarasi bilan kesiladi.
+Bu faqat ko'rinish uchun: rasmiy baho (nmu_daily jadvali) qat'iy chegaralar bo'yicha hisoblanadi.
 """
 import io, json, time
 from datetime import timedelta
@@ -12,28 +14,40 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.patheffects as pe
-from matplotlib.colors import ListedColormap, BoundaryNorm
-from matplotlib.patches import Patch
+from matplotlib.patches import Patch, PathPatch
+from matplotlib.path import Path as MPath
+from scipy.interpolate import griddata
+from scipy.ndimage import gaussian_filter
 import geopandas as gpd
 from shapely.geometry import Point
 from shapely.prepared import prep
+try:
+    from shapely import contains_xy
+except ImportError:
+    from shapely.vectorized import contains as contains_xy
 
 HERE = Path(__file__).parent
 URL = "https://api.open-meteo.com/v1/forecast"
 HOURLY = "wind_speed_10m,boundary_layer_height,temperature_2m,temperature_850hPa,surface_pressure"
-STEP, ELEV_MAX = 0.5, 1300                 # to'r qadami (°); bundan baland — barqarorlik ma'nosiz
+STEP, FINE, ELEV_MAX = 0.5, 0.05, 1300
 VC_PAST, VC_YAXSHI = 1000, 3000            # kunduzgi maksimal ventilatsiya toifalari (Toshkent arxivi, 2021–2026)
 TASH = (41.31, 69.28)
 CITY_ST = [107, 108, 720, 729, 730, 731, 732, 733, 734]
 OY = ["yanvar", "fevral", "mart", "aprel", "may", "iyun", "iyul", "avgust", "sentabr", "oktabr", "noyabr", "dekabr"]
+HAFTA = ["dushanba", "seshanba", "chorshanba", "payshanba", "juma", "shanba", "yakshanba"]
 CITIES = {"Toshkent": (41.31, 69.28), "Nukus": (42.46, 59.60), "Urganch": (41.55, 60.63), "Buxoro": (39.77, 64.42),
           "Navoiy": (40.10, 65.38), "Samarqand": (39.65, 66.96), "Qarshi": (38.86, 65.79), "Termiz": (37.22, 67.28),
           "Jizzax": (40.12, 67.84), "Guliston": (40.49, 68.78), "Namangan": (41.00, 71.67), "Andijon": (40.78, 72.34),
           "Farg'ona": (40.38, 71.79)}
-LVL_COL = {"NMSH 2-daraja": "#c62828", "NMSH 1-daraja": "#f39c4a"}
-HALO = [pe.withStroke(linewidth=3, foreground="white")]
+LABEL_OFF = {"Namangan": (5, 5, "left"), "Andijon": (6, -2, "left"), "Farg'ona": (6, -8, "left"),
+             "Guliston": (5, -7, "left"), "Jizzax": (-5, 4, "right"), "Navoiy": (-5, 4, "right"), "Toshkent": (-6, 6, "right")}
+C_NOQ, C_OTA, C_TOG, C_LAND, C_OUT = "#f2a25c", "#c8372d", "#d5d5d0", "#f7f6f2", "#e9e9e6"
+LVL_COL = {"NMSH 2-daraja": C_OTA, "NMSH 1-daraja": C_NOQ}
+INK, MUTED = "#1c2633", "#6b7480"
+HALO = [pe.withStroke(linewidth=2.6, foreground="white")]
 ASP = 1 / np.cos(np.deg2rad(41.3))
-SUBTITLE = "Noqulay meteorologik sharoitlar — NMSH (rus. неблагоприятные метеорологические условия, НМУ)"
+plt.rcParams.update({"font.family": "DejaVu Sans", "axes.edgecolor": "#c9cdd2", "axes.labelcolor": MUTED,
+                     "xtick.color": MUTED, "ytick.color": MUTED})
 
 
 def fetch(lat, lon, past_days=31, forecast_days=3):
@@ -73,10 +87,17 @@ def flags(r, KP):
             int(r.barq_tong > KP["barq_gt"]), int(r.bosim_anom > KP["bosim_anom_gt"])]
 
 
+def soft_score(R, KP):
+    """Komplekslar soni, uzluksiz ko'rinishda: har bir shart 0…1 (chegarada 0.5). Faqat kartani silliq chizish uchun."""
+    sg = lambda z: 1 / (1 + np.exp(-z))
+    return (sg((KP["shamol_lt"] - R.shamol) / 0.25) + sg((np.log(KP["aral_qatlam_lt"]) - np.log(R.aral_qatlam.clip(lower=10))) / 0.15)
+            + sg((R.barq_tong - KP["barq_gt"]) / 1.0) + sg((R.bosim_anom - KP["bosim_anom_gt"]) / 1.0))
+
+
 # ---------------------------------------------------------------- respublika to'ri
 def grid_assessment(KP, days, uzb):
     LON = np.round(np.arange(56.0, 73.26, STEP), 2); LAT = np.round(np.arange(37.25, 45.76, STEP), 2)
-    poly = prep(uzb.geometry.iloc[0].buffer(0.3))
+    poly = prep(uzb.geometry.iloc[0].buffer(0.6))
     G = pd.DataFrame([(la, lo) for la in LAT for lo in LON], columns=["lat", "lon"])
     G = G[[poly.contains(Point(lo, la)) for la, lo in zip(G.lat, G.lon)]].reset_index(drop=True)
     recs = []
@@ -86,101 +107,127 @@ def grid_assessment(KP, days, uzb):
             d = daily_feats(hourly_frame(j))
             for day in days:
                 if day not in d.index or d.loc[day].isna().any(): continue
-                k = sum(flags(d.loc[day], KP))
-                if j.get("elevation", 0) > ELEV_MAX: k = -1
-                recs.append(dict(lat=p.lat, lon=p.lon, kun=day, k=k))
+                r = d.loc[day]
+                recs.append(dict(lat=p.lat, lon=p.lon, kun=day, elev=float(j.get("elevation", 0)), k=sum(flags(r, KP)),
+                                 **{c: float(r[c]) for c in ["shamol", "aral_qatlam", "barq_tong", "bosim_anom"]}))
         time.sleep(2)
-    return pd.DataFrame(recs), LAT, LON
+    return pd.DataFrame(recs)
 
 
-def draw_map(R, LAT, LON, days, KP, adm1, uzb, outside, tash_txt):
-    COLS = ["#d9d9d9", "#f5f5f2", "#f39c4a", "#c62828"]                   # tog' | 0–2 | 3 | 4
-    cmap, norm = ListedColormap(COLS), BoundaryNorm([-1.5, -0.5, 2.5, 3.5, 4.5], 4)
-    fig, axs = plt.subplots(1, len(days), figsize=(8.5 * len(days), 6.3))
+def _geom_patch(geom, **kw):
+    polys = getattr(geom, "geoms", [geom]); verts, codes = [], []
+    for pg in polys:
+        for ring in [pg.exterior, *pg.interiors]:
+            xy = np.asarray(ring.coords); verts.append(xy)
+            codes += [MPath.MOVETO] + [MPath.LINETO] * (len(xy) - 2) + [MPath.CLOSEPOLY]
+    return PathPatch(MPath(np.vstack(verts), codes), **kw)
+
+
+def _smooth_field(x, y, v, X, Y, sigma=1.4):
+    pts = np.c_[x, y]
+    f = griddata(pts, v, (X, Y), method="linear")
+    f = np.where(np.isnan(f), griddata(pts, v, (X, Y), method="nearest"), f)
+    return gaussian_filter(f, sigma)
+
+
+def draw_map(R, days, KP, adm1, uzb, outside, issued):
+    geom = uzb.geometry.iloc[0]
+    lon_f = np.arange(55.9, 73.3 + 1e-9, FINE); lat_f = np.arange(37.0, 45.7 + 1e-9, FINE)
+    X, Y = np.meshgrid(lon_f, lat_f)
+    fig, axs = plt.subplots(1, len(days), figsize=(8.2 * len(days), 5.6))
     axs = np.atleast_1d(axs)
     for ax, day in zip(axs, days):
         g = R[R.kun == day]
-        A = np.full((len(LAT), len(LON)), np.nan)
-        for _, r in g.iterrows():
-            A[np.searchsorted(LAT, r.lat), np.searchsorted(LON, r.lon)] = r.k
-        outside.plot(ax=ax, color="#eeeeec", edgecolor="#c8c8c8", lw=0.5, zorder=0)
-        ax.imshow(np.ma.masked_invalid(A), origin="lower", cmap=cmap, norm=norm, interpolation="nearest", zorder=1,
-                  extent=[LON[0] - STEP / 2, LON[-1] + STEP / 2, LAT[0] - STEP / 2, LAT[-1] + STEP / 2])
-        outside.plot(ax=ax, color="#eeeeec", edgecolor="#c8c8c8", lw=0.5, zorder=2)
-        adm1.boundary.plot(ax=ax, color="#9a9a9a", lw=0.5, zorder=3)
-        uzb.boundary.plot(ax=ax, color="#3d3d3d", lw=1.1, zorder=4)
+        S = _smooth_field(g.lon.values, g.lat.values, soft_score(g, KP).values, X, Y)
+        E = _smooth_field(g.lon.values, g.lat.values, (g.elev > ELEV_MAX).astype(float).values, X, Y, sigma=1.0)
+        outside.plot(ax=ax, color=C_OUT, edgecolor="#d3d3cf", lw=0.4, zorder=0)
+        uzb.plot(ax=ax, color=C_LAND, edgecolor="none", zorder=1)
+        clip = _geom_patch(geom, transform=ax.transData, facecolor="none", edgecolor="none")
+        ax.add_patch(clip)
+        for cs in [ax.contourf(X, Y, S, levels=[2.5, 3.5, 99], colors=[C_NOQ, C_OTA], alpha=0.88, zorder=2, antialiased=True),
+                   ax.contourf(X, Y, E, levels=[0.5, 99], colors=[C_TOG], alpha=0.9, zorder=2.5)]:
+            cs.set_clip_path(clip)
+        adm1.boundary.plot(ax=ax, color="white", lw=0.9, zorder=3)
+        adm1.boundary.plot(ax=ax, color="#a7aaa6", lw=0.35, zorder=3.1)
+        uzb.boundary.plot(ax=ax, color="#4a4f55", lw=0.9, zorder=4)
         for nm, (la, lo) in CITIES.items():
-            ax.scatter(lo, la, s=14, c="#111", zorder=6)
-            txt = nm + (f"\n{tash_txt.get(day, '')}" if nm == "Toshkent" else "")
-            ax.annotate(txt, (lo, la), xytext=(5, 4), textcoords="offset points", fontsize=8.5, zorder=7,
-                        path_effects=HALO, weight="bold" if nm == "Toshkent" else "normal")
-        n3, n4 = int((g.k == 3).sum()), int((g.k == 4).sum())
-        ax.set_xlim(55.9, 73.3); ax.set_ylim(37.0, 45.7); ax.set_aspect(ASP); ax.set_xticks([]); ax.set_yticks([])
-        ax.set_xlabel(""); ax.set_ylabel("")
-        ax.set_title(f"{day.day}-{OY[day.month - 1]}", fontsize=13, loc="left", weight="bold")
-        ax.text(0.99, 0.97, f"NMSH hududi: {n3 + n4} katak (o'ta noqulay {n4})", transform=ax.transAxes,
-                ha="right", va="top", fontsize=8.5, color="#444", path_effects=HALO)
-    h = [Patch(fc=COLS[3], label="O'ta noqulay — 4 kompleks"), Patch(fc=COLS[2], label="Noqulay (NMSH) — 3 kompleks"),
-         Patch(fc=COLS[1], ec="#bbb", label="NMSH yo'q — 0–2 kompleks"), Patch(fc=COLS[0], label=f"Tog'li hudud (> {ELEV_MAX} m)")]
-    axs[0].legend(handles=h, loc="lower left", fontsize=8.5, framealpha=0.95, title="Meteorologik sharoit", title_fontsize=9)
-    fig.suptitle("Ifloslanish to'planishi uchun noqulay meteorologik sharoitlar (NMSH) prognozi",
-                 x=0.02, y=0.995, ha="left", fontsize=16, weight="bold")
-    fig.text(0.02, 0.945, SUBTITLE, fontsize=9.5, color="#555")
-    fig.text(0.02, 0.005,
-             f"Komplekslar: shamol < {KP['shamol_lt']} m/s; aralashish qatlami < {KP['aral_qatlam_lt']} m; tonggi barqarorlik "
-             f"> {KP['barq_gt']} K; bosim 31 kunlik o'rtachadan > +{KP['bosim_anom_gt']} hPa. NMSH: ≥{KP['k']} kompleks "
-             "(RD 52.04.52-85 asosida moslashtirilgan).\nChegaralar Toshkent ma'lumotlari bo'yicha kalibrlangan; REK oshishi "
-             "ehtimoli faqat Toshkent uchun. Ob-havo prognozi: Open-Meteo. O'zgidromet, sinov rejimi.", fontsize=8.5, color="#555")
-    plt.subplots_adjust(left=0.02, right=0.98, top=0.88, bottom=0.08, wspace=0.03)
+            ax.scatter(lo, la, s=12 if nm != "Toshkent" else 22, c=INK, zorder=6, edgecolor="white", linewidth=0.6)
+            dx, dy, ha = LABEL_OFF.get(nm, (5, 3, "left"))
+            ax.annotate(nm, (lo, la), xytext=(dx, dy), textcoords="offset points", ha=ha, fontsize=8.5 if nm != "Toshkent" else 9.5,
+                        color=INK, zorder=7, path_effects=HALO, weight="bold" if nm == "Toshkent" else "normal")
+        ax.set_xlim(55.9, 73.3); ax.set_ylim(37.0, 45.7); ax.set_aspect(ASP)
+        ax.set_xticks([]); ax.set_yticks([]); ax.set_xlabel(""); ax.set_ylabel("")
+        for s_ in ax.spines.values(): s_.set_visible(False)
+        ax.set_title(f"{day.day}-{OY[day.month - 1]}, {HAFTA[day.dayofweek]}", fontsize=13, loc="left", color=INK, weight="bold", pad=6)
+    h = [Patch(fc=C_OTA, label="O'ta noqulay"), Patch(fc=C_NOQ, label="Noqulay (NMSH)"),
+         Patch(fc=C_LAND, ec="#c9c9c4", label="NMSH yo'q"), Patch(fc=C_TOG, label="Tog'li hudud")]
+    fig.legend(handles=h, loc="lower center", ncol=4, frameon=False, fontsize=10, bbox_to_anchor=(0.5, 0.035),
+               handlelength=1.6, columnspacing=2.2)
+    fig.suptitle("Noqulay meteorologik sharoitlar (NMSH) prognozi", x=0.02, y=0.985, ha="left", fontsize=17, color=INK, weight="bold")
+    fig.text(0.02, 0.925, f"rus. неблагоприятные метеорологические условия (НМУ)   ·   baho: {issued}", fontsize=10, color=MUTED)
+    fig.text(0.98, 0.012, "O'zgidromet · ob-havo prognozi: Open-Meteo", ha="right", fontsize=8.5, color=MUTED)
+    plt.subplots_adjust(left=0.02, right=0.98, top=0.86, bottom=0.11, wspace=0.04)
     return _png(fig)
 
 
 # ---------------------------------------------------------------- Toshkent paneli
-def draw_panel(W, now_h, day_info, pf, ob):
+def draw_panel(W, now_h, day_info, pf, ob, issued):
     Wn = W[(W.index >= now_h - pd.Timedelta(hours=6)) & (W.index <= now_h + pd.Timedelta(hours=72))]
-    fig, ax = plt.subplots(3, 1, figsize=(15, 9.5), sharex=True, gridspec_kw=dict(height_ratios=[1.2, 0.8, 1.1], hspace=0.08))
-    a0, a1, a2 = ax
+    x0, x1 = Wn.index[0], Wn.index[-1]
+    fig = plt.figure(figsize=(14, 9.2))
+    gs = fig.add_gridspec(4, 1, height_ratios=[0.22, 1.15, 0.75, 1.05], hspace=0.12)
+    ah = fig.add_subplot(gs[0]); a0 = fig.add_subplot(gs[1], sharex=ah); a1 = fig.add_subplot(gs[2], sharex=ah)
+    a2 = fig.add_subplot(gs[3], sharex=ah)
+    # --- kunlik holat qatori ---
     for dday in sorted(set(Wn.index.normalize())):
-        info = day_info.get(dday)
-        if not info: continue
-        col = LVL_COL.get(info["daraja"], "#fbe3a1" if info.get("k", 0) >= info.get("kmin", 3) else None)
-        if col:
-            for a in ax: a.axvspan(dday, dday + pd.Timedelta(days=1), color=col, alpha=0.16, lw=0, zorder=0)
-        a0.text(dday + pd.Timedelta(hours=12), 1.02, info["matn"], transform=a0.get_xaxis_transform(), ha="center",
-                va="bottom", fontsize=9.5, weight="bold" if info["daraja"] in LVL_COL else "normal")
-    # 1) ventilatsiya (Toshkent toifalari: kunduzgi maksimal uchun)
-    a0.axhspan(1, VC_PAST, color="#c62828", alpha=0.07); a0.axhspan(VC_PAST, VC_YAXSHI, color="#f39c4a", alpha=0.07)
+        a, b = max(dday, x0), min(dday + pd.Timedelta(days=1), x1)
+        if b <= a: continue
+        info = day_info.get(dday, {})
+        col = LVL_COL.get(info.get("daraja"), "#f6dfa6" if info.get("k", 0) >= info.get("kmin", 3) else "#eef0f2")
+        ah.axvspan(a, b, color=col, lw=0); ah.axvline(dday, color="white", lw=3)
+        if (b - a) >= pd.Timedelta(hours=8):
+            ah.text(a + (b - a) / 2, 0.5, info.get("qisqa", f"{dday:%d.%m}"), ha="center", va="center", fontsize=9.5, color=INK,
+                    weight="bold" if info.get("daraja") in LVL_COL else "normal")
+    ah.set_ylim(0, 1); ah.set_yticks([]); ah.tick_params(labelbottom=False, bottom=False)
+    for s_ in ah.spines.values(): s_.set_visible(False)
+    # --- 1) ventilatsiya ---
+    a0.axhspan(1, VC_PAST, color=C_OTA, alpha=0.07, lw=0); a0.axhspan(VC_PAST, VC_YAXSHI, color=C_NOQ, alpha=0.08, lw=0)
     a0.plot(Wn.index, Wn.VC.clip(lower=6), color="#1d3557", lw=2)
-    a0.set_yscale("log"); a0.set_ylim(5, max(2e4, Wn.VC.max() * 1.3)); a0.set_ylabel("Ventilatsiya\nm²/s")
-    for yv, nm in [(VC_PAST, "past"), (VC_YAXSHI, "yaxshi")]:
-        a0.axhline(yv, color="#888", lw=0.7, ls="--")
-        a0.text(Wn.index[0], yv * 1.1, f" {nm} (kunduzgi maksimum uchun)", fontsize=8, color="#666")
-    # 2) barqarorlik
-    a1.plot(Wn.index, Wn.barq, color="#6a3d9a", lw=1.8); a1.axhline(5, color="#888", lw=0.7, ls="--")
-    a1.set_ylabel("Barqarorlik\nT850−T2m+9.8, K")
-    # 3) PM2.5
+    a0.set_yscale("log"); a0.set_ylim(5, max(2e4, Wn.VC.max() * 1.3)); a0.set_ylabel("Ventilatsiya, m²/s")
+    for yv, nm in [(np.sqrt(5 * VC_PAST), "past"), (np.sqrt(VC_PAST * VC_YAXSHI), "chegaraviy"), (VC_YAXSHI * 2.2, "yaxshi")]:
+        a0.text(1.005, yv, nm, transform=a0.get_yaxis_transform(), va="center", fontsize=8.5, color=MUTED)
+    # --- 2) barqarorlik ---
+    a1.axhspan(5, 40, color="#6a3d9a", alpha=0.06, lw=0)
+    a1.plot(Wn.index, Wn.barq, color="#6a3d9a", lw=1.8)
+    a1.set_ylim(min(-2, Wn.barq.min() - 1), max(12, Wn.barq.max() + 1)); a1.set_ylabel("Barqarorlik, K")
+    a1.text(1.005, 5 + (a1.get_ylim()[1] - 5) / 2, "inversiya", transform=a1.get_yaxis_transform(), va="center", fontsize=8.5, color=MUTED)
+    # --- 3) PM2.5 ---
     if pf is not None and len(pf):
-        a2.fill_between(pf.index, pf.p10, pf.p90, color="#e67e22", alpha=0.2, lw=0, label="prognoz p10–p90")
-        a2.plot(pf.index, pf.p50, color="#e67e22", lw=2, label="prognoz (ansambl, 9 st. medianasi)")
+        a2.fill_between(pf.index, pf.p10, pf.p90, color="#e67e22", alpha=0.18, lw=0, label="prognoz oralig'i (p10–p90)")
+        a2.plot(pf.index, pf.p50, color="#e67e22", lw=2, label="prognoz")
     if ob is not None and len(ob):
-        a2.plot(ob.index, ob.values, color="#222", lw=1.6, label="kuzatuv (9 st. medianasi)")
-    a2.axhline(60, color="#c62828", lw=0.9, ls="--"); a2.text(Wn.index[0], 62, " sutkalik REK = 60", fontsize=8, color="#c62828")
-    a2.set_ylabel("PM2.5, µg/m³"); a2.legend(loc="upper right", fontsize=8.5, framealpha=0.9); a2.set_ylim(bottom=0)
-    for a in ax:
-        a.axvline(now_h, color="#444", lw=1); a.grid(alpha=0.25)
+        a2.plot(ob.index, ob.values, color=INK, lw=1.8, label="kuzatuv")
+    a2.axhline(60, color=C_OTA, lw=0.9, ls=(0, (4, 3)))
+    a2.text(1.005, 60, "REK 60", transform=a2.get_yaxis_transform(), va="center", fontsize=8.5, color=C_OTA)
+    a2.set_ylabel("PM2.5, µg/m³"); a2.set_ylim(0, max(80, (pf.p90.max() if pf is not None and len(pf) else 0) * 1.1))
+    a2.legend(loc="upper left", fontsize=8.5, frameon=False, ncol=3)
+    for a in (a0, a1, a2):
+        a.axvline(now_h, color="#8b939c", lw=1, ls=(0, (2, 2)))
+        for dday in sorted(set(Wn.index.normalize()))[1:]: a.axvline(dday, color="#d9dde1", lw=0.8)
+        a.grid(axis="y", alpha=0.25); a.spines["top"].set_visible(False); a.spines["right"].set_visible(False)
+        a.tick_params(labelsize=9)
+    for a in (a0, a1): a.tick_params(labelbottom=False)
     a2.xaxis.set_major_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
-    a2.xaxis.set_major_formatter(mdates.DateFormatter("%d.%m\n%H:%M")); a2.set_xlim(Wn.index[0], Wn.index[-1])
-    fig.suptitle("Toshkent: ifloslanish to'planishi uchun meteorologik sharoit — 72 soat", x=0.06, ha="left",
-                 fontsize=15, weight="bold", y=1.0)
-    fig.text(0.06, 0.965, SUBTITLE, fontsize=9.5, color="#555")
-    fig.text(0.06, 0.005, f"Ventilatsiya = aralashish qatlami × shamol (10 m). Toifalar Toshkent arxivi bo'yicha (2021–2026): "
-             f"kunduzgi maksimum < {VC_PAST} m²/s — REK oshgan kunlar 46–58%, > {VC_YAXSHI} m²/s — 2–7%. "
-             "Fon rangi — kunlik NMSH holati. Ob-havo: Open-Meteo.", fontsize=8.3, color="#555")
+    a2.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M\n%d.%m")); a2.set_xlim(x0, x1)
+    fig.suptitle("Toshkent: noqulay meteorologik sharoitlar, 72 soat", x=0.07, y=0.985, ha="left", fontsize=16, color=INK, weight="bold")
+    fig.text(0.07, 0.945, f"baho: {issued}   ·   ventilatsiya = aralashish qatlami × shamol", fontsize=10, color=MUTED)
+    fig.text(0.98, 0.012, "O'zgidromet · ob-havo prognozi: Open-Meteo · PM2.5: V8.1 ansambl", ha="right", fontsize=8.5, color=MUTED)
+    fig.subplots_adjust(top=0.91, bottom=0.08)
     return _png(fig)
 
 
 def _png(fig):
-    buf = io.BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor="white"); plt.close(fig)
+    buf = io.BytesIO(); fig.savefig(buf, format="png", dpi=160, bbox_inches="tight", facecolor="white"); plt.close(fig)
     return buf.getvalue()
 
 
@@ -192,21 +239,20 @@ def make_all(sb, MODEL, today, now, pm_prev, rows, prob, daraja):
     outside = gpd.GeoDataFrame(geometry=nb.geometry.difference(uzb.geometry.iloc[0]), crs=4326)
     days = [today + pd.Timedelta(days=1), today + pd.Timedelta(days=2)]
     by_day = {pd.Timestamp(r["target_date"]): r for r in rows}
+    issued = f"{pd.Timestamp(now):%d.%m.%Y %H:%M}"
 
-    # Toshkent: soatlik ob-havo, kunlik holat
     W = hourly_frame(fetch([TASH[0]], [TASH[1]])[0]); dT = daily_feats(W)
     now_h = pd.Timestamp(now).floor("h"); info = {}
+    short = {"NMSH 2-daraja": "NMSH 2-daraja", "NMSH 1-daraja": "NMSH 1-daraja", "Yo'q": "NMSH yo'q"}
     for dday in sorted(set(dT.index)):
         if dday < today or dday > today + pd.Timedelta(days=3) or dT.loc[dday].isna().any(): continue
         k = sum(flags(dT.loc[dday], KP)); r = by_day.get(dday)
         if r:
-            info[dday] = dict(daraja=r["daraja"], k=k, kmin=KP["k"],
-                              matn=f"{dday:%d.%m}: {r['daraja']}\nkomplekslar {r['komplekslar']}/4 · REK oshishi {r['p_rek1']:.0%}")
+            lvl = short.get(r["daraja"], "Noqulay sharoit")
+            info[dday] = dict(daraja=r["daraja"], k=k, kmin=KP["k"], qisqa=f"{dday:%d.%m}  ·  {lvl}  ·  REK ehtimoli {r['p_rek1']:.0%}")
         else:
-            info[dday] = dict(daraja="", k=k, kmin=KP["k"], matn=f"{dday:%d.%m}: komplekslar {k}/4")
-    tash_txt = {d: f"REK oshishi ehtimoli: {by_day[d]['p_rek1']:.0%}" for d in days if d in by_day}
+            info[dday] = dict(daraja="", k=k, kmin=KP["k"], qisqa=f"{dday:%d.%m}")
 
-    # PM2.5: ansambl prognozi va kuzatuv
     pf = ob = None
     try:
         last = (sb.table("forecasts_v81").select("run_time").eq("model", "Ensemble").order("run_time", desc=True)
@@ -227,11 +273,11 @@ def make_all(sb, MODEL, today, now, pm_prev, rows, prob, daraja):
     def put(nm, data):
         st.upload(f"nmsh/latest/{nm}.png", data, opts)
         st.upload(f"nmsh/arxiv/{stamp}_{nm}.png", data, opts)
-    put("panel", draw_panel(W, now_h, info, pf, ob)); print("Panel yuklandi")      # karta muvaffaqiyatsiz bo'lsa ham
+    put("panel", draw_panel(W, now_h, info, pf, ob, issued)); print("Panel yuklandi")
     kat = {}
     try:
-        R, LAT, LON = grid_assessment(KP, days, uzb)
-        put("karta", draw_map(R, LAT, LON, days, KP, adm1, uzb, outside, tash_txt)); print("Karta yuklandi")
+        R = grid_assessment(KP, days, uzb)
+        put("karta", draw_map(R, days, KP, adm1, uzb, outside, issued)); print("Karta yuklandi")
         kat = {str(d.date()): int((R[R.kun == d].k >= KP["k"]).sum()) for d in days}
     except Exception as e:
         print("Karta xatosi:", repr(e))

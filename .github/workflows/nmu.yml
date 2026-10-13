@@ -12,7 +12,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install requests pandas numpy supabase matplotlib geopandas shapely pyogrio
+      - run: pip install requests pandas numpy supabase matplotlib geopandas shapely pyogrio scipy
       - run: python v81/nmu_daily.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
