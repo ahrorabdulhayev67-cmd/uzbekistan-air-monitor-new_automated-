@@ -606,6 +606,10 @@ def main():
     log.info("═" * 60)
     log.info("NATIJA (%.1f sekund):", elapsed)
     log.info("  PM stantsiyalar:    %d ta", len(pm_data))
+    print(f"::notice title=PM::{len(pm_data)} stansiyadan PM olindi", flush=True)
+    if not pm_data:
+        print("::error title=PM::monitoring.meteo.uz dan PM olinmadi (0 stansiya)", flush=True)
+        import sys as _sys; _sys.exit(1)
     log.info("  Meteo stantsiyalar: %d ta", len(meteo_stations))
     log.info("  Viloyatlar:         %d ta", len(regions))
     log.info("  Supabase PM:        %d qator", n_pm)
