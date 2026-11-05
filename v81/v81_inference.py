@@ -404,8 +404,12 @@ def run_station(sb, sid, t, now, MQ, M, dry):
             r10 = (np.clip(np.asarray(ref[0], float), 0, None) + 1) / b0
             r90 = (np.clip(np.asarray(ref[2], float), 0, None) + 1) / b0
             iv = lambda p: ((p + 1) * r10 - 1, p, (p + 1) * r90 - 1)       # oraliq: Ansambl-K ning nisbiy kengligi
-            if all((pol, m) in res for m in P_MEMBERS):
-                res[(pol, "Ensemble-N")] = iv(np.median([np.asarray(res[(pol, m)][1], float) for m in P_MEMBERS], axis=0))
+            mem = np.vstack([np.asarray(res[(pol, m)][1], float) for m in P_MEMBERS if (pol, m) in res])
+            nfin = np.isfinite(mem).sum(axis=0)                     # har muddat uchun mavjud a'zolar soni
+            if (nfin >= 3).any():
+                res[(pol, "Ensemble-N")] = iv(np.where(nfin >= 3, np.nanmedian(mem, axis=0), np.nan))
+                yoq = [m for m in P_MEMBERS if (pol, m) not in res or not np.isfinite(np.asarray(res[(pol, m)][1], float)).any()]
+                if yoq: log.info("[%s] Ansambl-N %s: yetishmagan a'zolar %s", sid, pol, yoq)
             if pol == "pm10" and (pol, "Ensemble-N") in res:
                 KP = M.get("P", {})
                 cg = [KP.get((int(sid), pol, g), KP.get(("*", pol, g))) for g in KGRP]
