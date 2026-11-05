@@ -35,6 +35,16 @@ KORR_D0 = 5                                     # shrinkage: 5 kunlik ma'lumotda
 KGRP = ["h1-3", "h4-6", "h7-12", "h13-24"]
 KLEADS = {"h1-3": 3, "h4-6": 3, "h7-12": 6, "h13-24": 12}   # guruhdagi muddatlar soni (soatiga juftliklar)
 
+# Ansambl-N / Ansambl-P (soya, 2026-11-05). Kauzal backtest 15.10–04.11 (operativ Ansamblga nisbatan):
+#   PM10 MAE 41.3 → 36.3, rejim almashgan haftada 60.0 → 51.0, bias −35.5 → −1.3;  PM2.5 MAE 19.7 → 18.2.
+# PM10: Ansambl-N (A2-rel, B2, C, Ansambl-K medianasi) · e^c, c — Ansambl-N log-xatosining eksponensial vaznli
+#       o'rtachasi (tau = 3 kun, 10 kun, stansiya × muddat guruhi; v81_skill_daily.sum_lr).
+# PM2.5: C va persistence aralashmasi, w(h) — backtest bo'yicha (qisqa muddatda kuzatuv inersiyasi kuchli).
+P_MEMBERS = ["A2-rel", "B2", "C", "Ensemble-K"]
+P_TAU, P_DAYS, P_MIN_N = 3.0, 10, 24
+P_BLEND25 = {1: .5, 2: .4, 3: .3, 4: .2, 5: .2, 6: .2, 7: .2, 8: .2, 9: .2,
+             10: .1, 11: .1, 12: .1, 13: .1, 14: .1, 15: .1}
+
 # ------------------------------------------------------------------ yordamchi
 def _sincos(x, p): a = 2*np.pi*x/p; return np.sin(a), np.cos(a)
 def group(idx):
@@ -264,6 +274,33 @@ def korr_factors(sb, t):
             out[(int(sid), pol, lg)] = float(np.clip(gs.sum_lr.sum() / (gs.n.sum() + n0), -KORR_CLIP, KORR_CLIP))
     return out
 
+def korr_ewma(sb, t, model="Ensemble-N", tau=P_TAU, days=P_DAYS, min_n=P_MIN_N):
+    """{(station_id | "*", pollutant, lead_grp): c} — model log-xatosining eksponensial vaznli o'rtachasi.
+    Vazn = exp(−yosh_kun / tau); kunlik yig'indilar v81_skill_daily dan (verify har 3 soatda yangilaydi)."""
+    today = (t + pd.Timedelta(hours=5)).normalize().tz_localize(None)
+    d0 = (today - pd.Timedelta(days=days - 1)).date().isoformat()
+    rows, s = [], 0
+    while True:
+        r = (sb.table("v81_skill_daily").select("date,station_id,pollutant,lead_grp,n,sum_lr")
+               .eq("model", model).gte("date", d0).range(s, s + 999).execute().data)
+        rows += r
+        if len(r) < 1000: break
+        s += 1000
+    D = pd.DataFrame(rows)
+    if D.empty or "sum_lr" not in D: return {}
+    D = D.dropna(subset=["sum_lr"]).astype({"n": float, "sum_lr": float})
+    age = (today - pd.to_datetime(D.date)).dt.days.clip(lower=0)
+    D["w"] = np.exp(-age / tau); D["wl"] = D.w * D.sum_lr; D["wn"] = D.w * D.n
+    out = {}
+    for (pol, lg), g in D.groupby(["pollutant", "lead_grp"]):
+        if g.n.sum() >= 4 * min_n and g.wn.sum() > 0:
+            out[("*", pol, lg)] = float(np.clip(g.wl.sum() / g.wn.sum(), -KORR_CLIP, KORR_CLIP))
+        for sid, gs in g.groupby("station_id"):
+            if gs.n.sum() >= min_n and gs.wn.sum() > 0:
+                out[(int(sid), pol, lg)] = float(np.clip(gs.wl.sum() / gs.wn.sum(), -KORR_CLIP, KORR_CLIP))
+    return out
+
+
 # ------------------------------------------------------------------ asosiy
 def run(dry=False, issue=None):
     url, key = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY")
@@ -288,6 +325,12 @@ def run(dry=False, issue=None):
                  {"-".join(map(str, k)): round(float(np.exp(v)), 2) for k, v in sorted(M["K"].items(), key=str) if k[0] == "*"} or "yo'q")
     except Exception as e:
         M["K"] = {}; log.warning("Ansambl-K: koeffitsient o'qilmadi (%s)", e)
+    try:
+        M["P"] = korr_ewma(sb, t)
+        log.info("Ansambl-P koeffitsientlari (PM10, e^c): %d ta | %s", len(M["P"]),
+                 {k: round(float(np.exp(v)), 3) for k, v in M["P"].items() if k[0] == "*" and k[1] == "pm10"})
+    except Exception as e:
+        M["P"] = {}; log.warning("Ansambl-P: koeffitsient o'qilmadi (%s)", e)
     out, ok, bad = [], [], []
     for sid in STATIONS:
         try:
@@ -353,6 +396,28 @@ def run_station(sb, sid, t, now, MQ, M, dry):
         if any(c is not None for c in cg):          # soya: portal/bot/ogohlantirishga ta'sir qilmaydi
             cv = np.array([cg[g] or 0.0 for g in GRP(lead)])
             res[(pol, "Ensemble-K")] = tuple(np.expm1(np.log1p(np.clip(v, 0, None)) + cv) for v in res[(pol, "Ensemble")])
+
+    for pol in ["pm10", "pm25"]:                          # Ansambl-N / Ansambl-P — soya: portal/bot/ogohlantirishga ta'sir qilmaydi
+        try:
+            ref = res.get((pol, "Ensemble-K")) or res[(pol, "Ensemble")]
+            b0 = np.clip(np.asarray(ref[1], float), 0, None) + 1
+            r10 = (np.clip(np.asarray(ref[0], float), 0, None) + 1) / b0
+            r90 = (np.clip(np.asarray(ref[2], float), 0, None) + 1) / b0
+            iv = lambda p: ((p + 1) * r10 - 1, p, (p + 1) * r90 - 1)       # oraliq: Ansambl-K ning nisbiy kengligi
+            if all((pol, m) in res for m in P_MEMBERS):
+                res[(pol, "Ensemble-N")] = iv(np.median([np.asarray(res[(pol, m)][1], float) for m in P_MEMBERS], axis=0))
+            if pol == "pm10" and (pol, "Ensemble-N") in res:
+                KP = M.get("P", {})
+                cg = [KP.get((int(sid), pol, g), KP.get(("*", pol, g))) for g in KGRP]
+                if any(c is not None for c in cg):
+                    cv = np.array([cg[g] if cg[g] is not None else 0.0 for g in GRP(lead)])
+                    res[(pol, "Ensemble-P")] = iv(np.expm1(np.log1p(np.clip(res[(pol, "Ensemble-N")][1], 0, None)) + cv))
+            if pol == "pm25" and (pol, "C") in res:
+                w = np.array([P_BLEND25.get(int(h), 0.0) for h in lead])
+                c50 = np.asarray(res[(pol, "C")][1], float); pers = np.asarray(res[(pol, "persistence")][1], float)
+                res[(pol, "Ensemble-P")] = iv(np.where(np.isfinite(pers), w * pers + (1 - w) * c50, c50))
+        except Exception as e:
+            log.warning("[%s] Ansambl-P %s hisoblanmadi: %s", sid, pol, e)
 
     try:                                                  # sharh xatosi prognozni to'xtatmaydi
         EXPL = build_explanations(sid, t, X, A, res, lead); LAST_EXPL.extend(EXPL)

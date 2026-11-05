@@ -26,10 +26,10 @@ BUCKET = "reports"
 GRP_EDGES, GRP_NAMES = [0, 3, 6, 12, 24], ["h1-3", "h4-6", "h7-12", "h13-24"]
 STATIONS = {107: "O'zgidromet", 108: "Chilonzor", 733: "Uchtepa", 732: "Tashselmash", 734: "Olmazor",
             730: "Safia", 731: "Green University", 720: "TTZ-4", 729: "Yangi O'zbekiston"}
-MODELS = ["Ensemble", "Ensemble-K", "A-rel", "A-abs", "B", "C", "A2-rel", "B2", "persistence"]
-MNAME = {"Ensemble": "Ansambl", "Ensemble-K": "Ansambl-K (sinov)", "A-rel": "A · nisbiy", "A-abs": "A · mutlaq", "B": "B · box", "C": "C · TFT",
+MODELS = ["Ensemble", "Ensemble-K", "Ensemble-P", "A-rel", "A-abs", "B", "C", "A2-rel", "B2", "persistence"]
+MNAME = {"Ensemble": "Ansambl", "Ensemble-K": "Ansambl-K (sinov)", "Ensemble-P": "Ansambl-P (sinov)", "A-rel": "A · nisbiy", "A-abs": "A · mutlaq", "B": "B · box", "C": "C · TFT",
          "A2-rel": "A2 · nisbiy (sinov)", "B2": "B2 · box (sinov)", "persistence": "Persistence"}
-MCOL = {"Ensemble": "#e67e22", "Ensemble-K": "#f1c40f", "A-rel": "#16a085", "A-abs": "#27ae60", "B": "#8e44ad", "C": "#c0392b",
+MCOL = {"Ensemble": "#e67e22", "Ensemble-K": "#f1c40f", "Ensemble-P": "#1a5276", "A-rel": "#16a085", "A-abs": "#27ae60", "B": "#8e44ad", "C": "#c0392b",
         "A2-rel": "#5dade2", "B2": "#d2b4de", "persistence": "#7f8c8d"}
 LABEL = {"pm25": "PM2.5", "pm10": "PM10"}
 _DP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "oqlanish_delta.json")
