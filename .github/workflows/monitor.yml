@@ -38,17 +38,6 @@ jobs:
           echo "=== Ulanish tekshirish ==="
           curl -s --max-time 10 -o /dev/null -w "%{http_code}\n" https://monitoring.meteo.uz/ || echo "monitoring.meteo.uz ulanmadi"
           curl -s --max-time 10 -o /dev/null -w "%{http_code}\n" https://data.meteo.uz/      || echo "data.meteo.uz ulanmadi"
-          echo "=== monitoring.meteo.uz: runnerdan tekshiruv ==="
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36"
-          for u in "https://monitoring.meteo.uz/ru/map/view/107" "https://monitoring.meteo.uz/api/maps"; do
-            code=$(curl -s -L --max-time 20 -A "$UA" -H "Referer: https://monitoring.meteo.uz/" -o /tmp/p.html -w "%{http_code}" "$u" || echo 000)
-            size=$(wc -c < /tmp/p.html 2>/dev/null || echo 0)
-            pm=$(grep -c "PM 2.5" /tmp/p.html 2>/dev/null || true)
-            title=$(grep -o "<title>[^<]*" /tmp/p.html 2>/dev/null | head -1 | cut -c8-80)
-            echo "::warning title=diag::$u code=$code size=$size pm25_matn=${pm:-0} title=$title"
-            if [ "${pm:-0}" = "0" ]; then echo "::warning title=diag-boshi::$(head -c 400 /tmp/p.html | tr -d '\n\r' | tr -s ' ')"; fi
-          done
-          echo "::warning title=diag-ip::$(curl -s --max-time 10 https://ipinfo.io/json | tr -d '\n ' | cut -c1-220)"
 
       - name: Pipeline ishga tushirish
         env:

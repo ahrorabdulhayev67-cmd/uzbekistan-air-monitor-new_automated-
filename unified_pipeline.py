@@ -230,6 +230,9 @@ def collect_pm_data(session, stations: list) -> list:
             d["lat"]       = st["lat"]
             d["lon"]       = st["lon"]
             d["source"]    = "monitoring.meteo.uz"
+            if not d.get("timestamp") or (d.get("pm10") is None and d.get("pm25") is None):
+                log.warning("Stantsiya %s (%s): vaqt yoki PM yo'q — o'tkazildi", st["id"], st["alias"])
+                return None
 
             if d.get("timestamp"):
                 ts        = datetime.fromisoformat(d["timestamp"])
@@ -607,8 +610,8 @@ def main():
     log.info("NATIJA (%.1f sekund):", elapsed)
     log.info("  PM stantsiyalar:    %d ta", len(pm_data))
     print(f"::notice title=PM::{len(pm_data)} stansiyadan PM olindi", flush=True)
-    if not pm_data:
-        print("::error title=PM::monitoring.meteo.uz dan PM olinmadi (0 stansiya)", flush=True)
+    if not pm_data or not n_pm:
+        print(f"::error title=PM::PM olinmadi yoki Supabase ga yozilmadi (stansiya={len(pm_data)}, qator={n_pm})", flush=True)
         import sys as _sys; _sys.exit(1)
     log.info("  Meteo stantsiyalar: %d ta", len(meteo_stations))
     log.info("  Viloyatlar:         %d ta", len(regions))
