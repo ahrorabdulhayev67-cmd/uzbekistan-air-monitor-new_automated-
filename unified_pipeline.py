@@ -219,41 +219,55 @@ def scrape_station_pm(session, station_id: int) -> dict:
     return result
 
 
+
 def collect_pm_data(session, stations: list) -> list:
-    now = datetime.now(timezone.utc)
+    """monitoring.meteo.uz stansiya sahifalaridan PM va gazlarni yig'adi.
+
+    Sahifadagi "Обновлено" vaqti Toshkent mahalliy vaqti. U obs_unified ga
+    "+00:00" yorlig'i bilan yoziladi (main.py dagi OBS_TS_OFFSET = +5 soat shunga
+    tayanadi), shuning uchun eskirganlik ham mahalliy vaqtga nisbatan hisoblanadi.
+    Vaqti yoki PM qiymati yo'q stansiya o'tkaziladi: bitta yaroqsiz qator
+    butun upsert ni rad ettirmasligi kerak (2026-11-04, 730 Safia holati).
+    """
+    hozir_mahalliy = datetime.now(timezone.utc).timestamp() + 5 * 3600
 
     def scrape_one(st):
         try:
             d = scrape_station_pm(session, st["id"])
-            d["alias"]     = st["alias"]
-            d["region_id"] = st["region_id"]
-            d["lat"]       = st["lat"]
-            d["lon"]       = st["lon"]
-            d["source"]    = "monitoring.meteo.uz"
-            if not d.get("timestamp") or (d.get("pm10") is None and d.get("pm25") is None):
-                log.warning("Stantsiya %s (%s): vaqt yoki PM yo'q — o'tkazildi", st["id"], st["alias"])
-                return None
-
-            if d.get("timestamp"):
-                ts        = datetime.fromisoformat(d["timestamp"])
-                hours_old = (now - ts).total_seconds() / 3600
-                if hours_old > STALE_HOURS:
-                    log.warning("Stantsiya %s eski (%dh) — o'tkazildi",
-                                st["id"], int(hours_old))
-                    return None
-
-            log.info("✓ %s (%s): PM10=%s PM2.5=%s",
-                     st["id"], st["alias"],
-                     d.get("pm10", "?"), d.get("pm25", "?"))
-            return d
-
         except Exception as e:
-            log.error("Stantsiya %s xato: %s", st["id"], e)
+            log.error("Stantsiya %s (%s) xato: %s", st["id"], st["alias"], e)
             return None
 
+        d["alias"]     = st["alias"]
+        d["region_id"] = st["region_id"]
+        d["lat"]       = st["lat"]
+        d["lon"]       = st["lon"]
+        d["source"]    = "monitoring.meteo.uz"
+
+        if not d.get("timestamp"):
+            log.warning("Stantsiya %s (%s): yangilanish vaqti yo'q — o'tkazildi", st["id"], st["alias"])
+            return None
+        if d.get("pm10") is None and d.get("pm25") is None:
+            log.warning("Stantsiya %s (%s): PM qiymati yo'q — o'tkazildi", st["id"], st["alias"])
+            return None
+
+        try:
+            ts = datetime.fromisoformat(d["timestamp"])
+        except ValueError:
+            log.warning("Stantsiya %s (%s): vaqt o'qilmadi (%s) — o'tkazildi",
+                        st["id"], st["alias"], d.get("updated_raw"))
+            return None
+
+        hours_old = (hozir_mahalliy - ts.timestamp()) / 3600
+        if hours_old > STALE_HOURS:
+            log.warning("Stantsiya %s (%s) eski (%dh) — o'tkazildi", st["id"], st["alias"], int(hours_old))
+            return None
+
+        log.info("✓ %s (%s): PM10=%s PM2.5=%s", st["id"], st["alias"], d.get("pm10"), d.get("pm25"))
+        return d
+
     results = []
-    # ASSUMPTION: monitoring.meteo.uz scraping uchun 5 parallel yetarli
-    # Server yukini kamaytirish uchun ko'proq qo'ymadik
+    # monitoring.meteo.uz serverini ortiqcha yuklamaslik uchun 5 ta parallel so'rov
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(scrape_one, st) for st in stations]
         for future in as_completed(futures):
@@ -261,8 +275,7 @@ def collect_pm_data(session, stations: list) -> list:
             if row:
                 results.append(row)
 
-    log.info("PM ma'lumotlar: %d/%d stantsiya yangi",
-             len(results), len(stations))
+    log.info("PM ma'lumotlar: %d/%d stantsiya yangi", len(results), len(stations))
     return results
 
 
