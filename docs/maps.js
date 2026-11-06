@@ -48,9 +48,9 @@
   const VIDEO_FPS = 10;                                // video kadr chastotasi (har soat kadri frameMs davomida takrorlanadi)
   const levFor = (v) => (S.mode === "tashkent" ? TASH_LEVELS[v] : LEVELS[v]);                                   // qatlam shaffofligi (0–255)
 
-  const S = { mode: "silam", v: "pm25", step: 0, t: null, corr: true, playing: null, frames: [] };
+  const S = { mode: "silam", v: "pm25", step: 0, t: null, corr: true, playing: null, frames: [], tm: "Ensemble", sc: "p50" };
   const nearest = (arr, t) => { let b = 0; for (let i = 1; i < arr.length; i++) if (Math.abs(arr[i] - t) < Math.abs(arr[b] - t)) b = i; return b; };
-  const cache = { silam: null, cams: null, tash: null };
+  const cache = { silam: null, cams: null, tash: null, tashBase: null };
   let map, ptChart, ptLngLat = null;
 
   // ---------- yordamchilar ----------
@@ -154,64 +154,115 @@
   }
 
   // ---------- Toshkent qatlami ----------
-  async function loadTashkent() {
-    if (cache.tash) return cache.tash;
-    const p = await getJSON(`${PUB}/tashkent/tashkent_lur.json`);
-    const [Hh, W] = p.shape, fac = {};
+  // Prognoz modeli (Toshkent qatlami). "auto" — oxirgi 7 kun verifikatsiyasida MAE eng past model (har modda uchun alohida).
+  const TM_CAND = ["Ensemble", "Ensemble-K", "C", "Ensemble-P", "A2-rel", "B2"];
+  const TM_NAME = { auto: "Eng aniq (avto)", Ensemble: "Ansambl", "Ensemble-K": "Ansambl-K", C: "C · TFT",
+                    "Ensemble-P": "Ansambl-P (sinov)", "A2-rel": "A2 · nisbiy", B2: "B2 · box" };
+  async function qAll(table, params) {
+    let out = [], s = 0;
+    for (;;) { const r = await q(table, [...params, ["offset", String(s)], ["limit", "1000"]]); out = out.concat(r); if (r.length < 1000) break; s += 1000; }
+    return out;
+  }
+  async function bestModels() {
+    const d0 = new Date(Date.now() + TZ - 7 * 24 * H).toISOString().slice(0, 10);
+    const rows = await qAll("v81_skill_daily", [["select", "model,pollutant,n,sum_ae"], ["date", `gte.${d0}`], ["model", `in.(${TM_CAND.join(",")})`]]);
+    const out = {};
     for (const v of TASH_VARS) {
-      const raw = await getU16(`${PUB}/tashkent/factor_${v}.bin`);
-      fac[v] = Float32Array.from(raw, (x) => x * p.pollutants[v].scale);
+      const agg = {};
+      for (const r of rows) if (r.pollutant === v && r.sum_ae != null) { const g = agg[r.model] || (agg[r.model] = { n: 0, ae: 0 }); g.n += +r.n; g.ae += +r.sum_ae; }
+      const nRef = agg.Ensemble ? agg.Ensemble.n : 0; let best = null;
+      for (const [m, g] of Object.entries(agg)) {
+        if (g.n < 500 || g.n < 0.5 * nRef) continue;            // kam ma'lumotli model adolatsiz solishtiriladi
+        const mae = g.ae / g.n; if (!best || mae < best.mae) best = { m, mae, n: g.n };
+      }
+      out[v] = best || { m: "Ensemble", mae: null, n: 0 };
     }
-    // shahar darajasi: o'tgan 24 soat — stansiyalar medianasi; keyingi 24 soat — V8.1 ansambli / F107
-    const since = new Date(Date.now() + TZ - 26 * H).toISOString();
-    const obs = await q("obs_unified", [["select", "station_id,timestamp,pm10,pm25"], ["timestamp", `gte.${since}`],
-      ["station_id", `in.(${TASH_STATIONS.join(",")})`], ["limit", "5000"]]);
-    const byH = new Map(), st = new Map();
-    for (const o of obs) {
-      const t = Math.floor((Date.parse(o.timestamp) - TZ) / H) * H;
-      const b = byH.get(t) || { pm25: [], pm10: [] };
-      const v25 = o.pm25 != null && +o.pm25 >= MIN_OBS ? +o.pm25 : null, v10 = o.pm10 != null && +o.pm10 >= MIN_OBS ? +o.pm10 : null;
-      if (v25 != null) b.pm25.push(v25); if (v10 != null) b.pm10.push(v10); byH.set(t, b);
-      st.set(`${o.station_id}|${t}`, { pm25: v25, pm10: v10 });
-    }
-    let boundary = null, stInfo = [];
-    try { boundary = await getJSON(`${PUB}/tashkent/tashkent_boundary.geojson`); } catch (e) { console.warn("chegara", e); }
-    try {
-      const li = await q("obs_unified", [["select", "station_id,lat,lon"], ["station_id", `in.(${TASH_STATIONS.join(",")})`],
-        ["order", "timestamp.desc"], ["limit", "200"]]);
-      const seen = new Set();
-      for (const r of li) if (!seen.has(r.station_id)) { seen.add(r.station_id); stInfo.push({ id: r.station_id, lat: +r.lat, lon: +r.lon }); }
-    } catch (e) { console.warn("stansiyalar", e); }
+    return out;
+  }
+
+  async function loadTashkent() {
+    const key = `${S.tm}|${S.sc}`;
+    if (cache.tash && cache.tash.key === key) return cache.tash;
     const med = (a) => { if (a.length < 4) return null; const s = a.slice().sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
-    const frames = [...byH.entries()].sort((a, b) => a[0] - b[0])
-      .map(([t, b]) => ({ t, kind: "kuzatuv", pm25: med(b.pm25), pm10: med(b.pm10) })).filter((f) => f.pm25 != null && f.pm10 != null);
-    const stf = new Map();                              // stansiya prognozlari: `${id}|${t}` → {pm25, pm10}
+    if (!cache.tashBase) {                                   // statik qism: bir marta yuklanadi
+      const p = await getJSON(`${PUB}/tashkent/tashkent_lur.json`);
+      const [Hh, W] = p.shape, fac = {};
+      for (const v of TASH_VARS) {
+        const raw = await getU16(`${PUB}/tashkent/factor_${v}.bin`);
+        fac[v] = Float32Array.from(raw, (x) => x * p.pollutants[v].scale);
+      }
+      const since = new Date(Date.now() + TZ - 26 * H).toISOString();
+      const obs = await q("obs_unified", [["select", "station_id,timestamp,pm10,pm25"], ["timestamp", `gte.${since}`],
+        ["station_id", `in.(${TASH_STATIONS.join(",")})`], ["limit", "5000"]]);
+      const byH = new Map(), st = new Map();
+      for (const o of obs) {
+        const t = Math.floor((Date.parse(o.timestamp) - TZ) / H) * H;
+        const b = byH.get(t) || { pm25: [], pm10: [] };
+        const v25 = o.pm25 != null && +o.pm25 >= MIN_OBS ? +o.pm25 : null, v10 = o.pm10 != null && +o.pm10 >= MIN_OBS ? +o.pm10 : null;
+        if (v25 != null) b.pm25.push(v25); if (v10 != null) b.pm10.push(v10); byH.set(t, b);
+        st.set(`${o.station_id}|${t}`, { pm25: v25, pm10: v10 });
+      }
+      let boundary = null, stInfo = [];
+      try { boundary = await getJSON(`${PUB}/tashkent/tashkent_boundary.geojson`); } catch (e) { console.warn("chegara", e); }
+      try {
+        const li = await q("obs_unified", [["select", "station_id,lat,lon"], ["station_id", `in.(${TASH_STATIONS.join(",")})`],
+          ["order", "timestamp.desc"], ["limit", "200"]]);
+        const seen = new Set();
+        for (const r of li) if (!seen.has(r.station_id)) { seen.add(r.station_id); stInfo.push({ id: r.station_id, lat: +r.lat, lon: +r.lon }); }
+      } catch (e) { console.warn("stansiyalar", e); }
+      const obsFrames = [...byH.entries()].sort((a, b) => a[0] - b[0])
+        .map(([t, b]) => ({ t, kind: "kuzatuv", pm25: med(b.pm25), pm10: med(b.pm10) })).filter((f) => f.pm25 != null && f.pm10 != null);
+      cache.tashBase = { p, Hh, W, fac, st, boundary, stInfo, obsFrames };
+    }
+    const B = cache.tashBase, { p, Hh, W, fac, st, boundary, stInfo } = B;
+    const frames = B.obsFrames.map((f) => ({ ...f }));
+    const stf = new Map(), minfo = { sc: S.sc, used: {}, auto: null, fallback: [] };
     try {
+      const want = {};
+      if (S.tm === "auto") { try { minfo.auto = await bestModels(); } catch (e) { console.warn("avto model", e); }
+        for (const v of TASH_VARS) want[v] = minfo.auto ? minfo.auto[v].m : "Ensemble"; }
+      else for (const v of TASH_VARS) want[v] = S.tm;
       const last = await q("forecasts_v81", [["select", "run_time"], ["station_id", `eq.${C.FORECAST_STATION}`], ["model", "eq.Ensemble"],
         ["order", "run_time.desc"], ["limit", "1"]]);
       if (last.length) {
-        // Prognoz darajasi kuzatuv bilan bir xil ta'rifda: stansiyalar prognozlarining medianasi (≥4 stansiya)
-        const fc = await q("forecasts_v81", [["select", "station_id,pollutant,target_time,p50"], ["run_time", `eq.${last[0].run_time}`],
-          ["station_id", `in.(${TASH_STATIONS.join(",")})`], ["model", "eq.Ensemble"], ["order", "lead_h.asc"], ["limit", "1000"]]);
-        const tmax = frames.length ? frames[frames.length - 1].t : 0, by = new Map();
-        for (const r of fc) {
-          const t = Date.parse(r.target_time); if (t <= tmax || r.p50 == null) continue;
-          const b = by.get(t) || { pm25: [], pm10: [], f107: {} }; b[r.pollutant].push(+r.p50);
-          if (r.station_id === C.FORECAST_STATION) b.f107[r.pollutant] = +r.p50;
-          by.set(t, b);
-          const k = `${r.station_id}|${t}`, o = stf.get(k) || {}; o[r.pollutant] = +r.p50; stf.set(k, o);
+        const rt = last[0].run_time, col = S.sc === "p90" ? "p90" : "p50", raw = {};
+        for (const m of new Set([...Object.values(want), "Ensemble"]))
+          raw[m] = await q("forecasts_v81", [["select", `station_id,pollutant,target_time,${col}`], ["run_time", `eq.${rt}`],
+            ["station_id", `in.(${TASH_STATIONS.join(",")})`], ["model", `eq.${m}`], ["order", "lead_h.asc"], ["limit", "1000"]]);
+        const tmax = frames.length ? frames[frames.length - 1].t : 0;
+        const pick = (m, v) => {
+          const by = new Map();
+          for (const r of raw[m] || []) {
+            if (r.pollutant !== v || r[col] == null) continue;
+            const t = Date.parse(r.target_time); if (t <= tmax) continue;
+            const b = by.get(t) || { vals: [], f107: null, st: {} };
+            b.vals.push(+r[col]); b.st[r.station_id] = +r[col]; if (r.station_id === C.FORECAST_STATION) b.f107 = +r[col];
+            by.set(t, b);
+          }
+          return by;
+        };
+        const per = {};
+        for (const v of TASH_VARS) {
+          let m = want[v], by = pick(m, v);
+          if (m !== "Ensemble" && [...by.values()].filter((b) => b.vals.length >= 4).length < 6) { minfo.fallback.push(v); m = "Ensemble"; by = pick(m, v); }
+          minfo.used[v] = m; per[v] = by;
         }
-        const fr = [...by.entries()].sort((a, b) => a[0] - b[0]).map(([t, b]) => {
+        const ts = [...new Set(TASH_VARS.flatMap((v) => [...per[v].keys()]))].sort((a, b) => a - b);
+        for (const t of ts) {
           const f = { t, kind: "prognoz" };
-          for (const v of TASH_VARS) f[v] = med(b[v]) ?? (b.f107[v] != null ? b.f107[v] / p.pollutants[v].F107 : null);   // zaxira: eski usul (107 / F107)
-          return f;
-        });
-        frames.push(...fr.filter((f) => f.pm25 != null && f.pm10 != null));
+          for (const v of TASH_VARS) {
+            const b = per[v].get(t);
+            f[v] = b ? (med(b.vals) ?? (b.f107 != null ? b.f107 / p.pollutants[v].F107 : null)) : null;   // zaxira: 107 / F107
+            if (b) for (const [sid, val] of Object.entries(b.st)) { const k = `${sid}|${t}`, o = stf.get(k) || {}; o[v] = val; stf.set(k, o); }
+          }
+          if (f.pm25 != null && f.pm10 != null) frames.push(f);
+        }
       }
     } catch (e) { console.warn("prognoz", e); }
-    const T = { p, Hh, W, fac, frames, st, stf, stInfo, mask: boundary ? buildMask(p, Hh, W, boundary) : null,
-                cityBB: boundary ? geoBounds(boundary) : null, boundary };
-    T.facD = smoothFactors(T);
+    const T = { key, minfo, p, Hh, W, fac, frames, st, stf, stInfo, boundary,
+                mask: B.mask !== undefined ? B.mask : (B.mask = boundary ? buildMask(p, Hh, W, boundary) : null),
+                cityBB: boundary ? geoBounds(boundary) : null };
+    T.facD = B.facD || (B.facD = smoothFactors(T));
     // Har bir kadr uchun stansiya qoldiqlari (log): kuzatuvda — o'lchovdan, prognozda — stansiyaning o'z prognozidan
     for (const f of frames) {
       f.res = {}; f.resD = {};
@@ -687,6 +738,22 @@
     $("vars").innerHTML = MODEL_VARS.map((v) =>
       `<button data-v="${v}" class="${v === S.v ? "on" : ""}" ${vars.includes(v) ? "" : "disabled"}>${VAR[v]}</button>`).join("");
     $("vars").querySelectorAll("button").forEach((b) => b.onclick = () => { S.v = b.dataset.v; draw(); });
+    // Toshkent: prognoz modeli va ssenariy
+    const tmc = $("tm-ctl");
+    if (tmc) {
+      tmc.classList.toggle("hidden", S.mode !== "tashkent");
+      $("tmodel").innerHTML = ["Ensemble", "auto", "Ensemble-K", "C", "Ensemble-P"]
+        .map((m) => `<button data-v="${m}" class="${m === S.tm ? "on" : ""}">${TM_NAME[m]}</button>`).join("");
+      $("tmodel").querySelectorAll("button").forEach((b) => b.onclick = () => { if (S.tm === b.dataset.v) return; S.tm = b.dataset.v; cache.tash = null; draw(); });
+      $("tsc").querySelectorAll("button").forEach((b) => { b.classList.toggle("on", b.dataset.v === S.sc);
+        b.onclick = () => { if (S.sc === b.dataset.v) return; S.sc = b.dataset.v; cache.tash = null; draw(); }; });
+      const mi = cache.tash && cache.tash.minfo;
+      $("tm-note").innerHTML = !mi ? "" :
+        TASH_VARS.map((v) => `${VAR[v]}: <b>${TM_NAME[mi.used[v]] || mi.used[v] || "—"}</b>` +
+          (mi.auto && mi.auto[v] && mi.auto[v].mae != null ? ` (7 kun MAE ${mi.auto[v].mae.toFixed(1)})` : "")).join(" · ") +
+        (mi.fallback.length ? `<br>${mi.fallback.map((v) => VAR[v]).join(", ")}: tanlangan model prognozi hali to'liq emas — Ansambl ishlatildi.` : "") +
+        (S.sc === "p90" ? "<br><b>p90</b> — 10% ehtimol bilan bundan ham yuqori bo'lishi mumkin (yomon ssenariy)." : "");
+    }
     // tuzatish
     const M = cache[S.mode], rinfo = M && M.meta.ratio && M.meta.ratio[S.v];
     const canCorr = S.mode !== "tashkent" && (S.v === "pm25" || S.v === "pm10");
@@ -712,7 +779,7 @@
       const T = cache.tash, pp = T ? T.p.pollutants[S.v] : null;
       const nul = pp && (pp.null_rmse || pp.loo_rmse_null);
       info = `<b>Toshkent, ~100 m.</b> Shahar darajasi × ko'cha koeffitsiyenti × stansiya tuzatmasi. Darajasi: o'tgan soatlarda ` +
-        `stansiyalar o'lchovlarining medianasi, kelajakda stansiyalar bo'yicha V8.1 ansambl prognozlarining medianasi. ` +
+        `stansiyalar o'lchovlarining medianasi, kelajakda stansiyalar bo'yicha tanlangan V8.1 modeli prognozlarining medianasi. ` +
         `Stansiya tuzatmasi: har bir stansiyadagi o'lchov (prognoz) va model farqi ~${RES_L_KM} km radiusda yoyiladi — ` +
         `xarita stansiyalar yonida ularning qiymatiga yaqinlashadi. Ko'cha ta'siri xaritada ~${DISPLAY_SMOOTH_M} m bo'yicha silliqlangan ` +
         `(mahalla darajasi); nuqtaga bosilganda — aniq 100 m qiymat. Shahar hududi to'liq ko'rsatiladi; stansiyalardan uzoq tumanlarda qiymat shahar darajasi va ko'cha ` +
