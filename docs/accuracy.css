@@ -28,3 +28,32 @@
   .ctl { flex: 1 1 100%; }
   .kpi .k-val { font-size: 22px; }
 }
+
+/* --- prognoz va haqiqiy qiymat grafigi (accuracy_ts.js) --- */
+.ts-card{margin-top:16px;grid-column:1/-1;width:100%;min-width:0;box-sizing:border-box}
+.ts-hint{font-size:12px;color:#6b7280;margin:2px 0 10px}
+.ts-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
+.ts-controls select{padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font:inherit;font-size:13px;background:#fff}
+.ts-seg{display:inline-flex;align-items:center;gap:2px;background:#f3f4f6;border-radius:8px;padding:2px}
+.ts-seg span{font-size:12px;color:#6b7280;padding:0 6px}
+.ts-seg button{border:0;background:transparent;padding:5px 10px;border-radius:6px;font:inherit;font-size:13px;cursor:pointer;color:#374151}
+.ts-seg button.on{background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.12);color:#111827;font-weight:600}
+.ts-chk{font-size:13px;color:#374151;display:inline-flex;gap:4px;align-items:center}
+.ts-chart{width:100%;height:340px}
+.ts-info{font-size:12px;color:#374151;margin-top:6px;line-height:1.55}
+@media (max-width:520px){.ts-chart{height:280px}.ts-seg button{padding:5px 8px}}
+
+.ts-models{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 6px}
+.ts-models button{display:inline-flex;align-items:center;gap:6px;border:1px solid #e5e7eb;background:#fff;color:#9ca3af;
+  border-radius:999px;padding:4px 10px;font:inherit;font-size:12px;cursor:pointer}
+.ts-models button i{width:10px;height:10px;border-radius:50%;display:inline-block;opacity:.35}
+.ts-models button.on{color:#111827;border-color:#d1d5db;box-shadow:0 1px 2px rgba(0,0,0,.06)}
+.ts-models button.on i{opacity:1}
+.ts-cap{font-size:12px;color:#6b7280;margin:4px 0 6px}
+.ts-tab{border-collapse:collapse;font-size:12px;min-width:min(100%,520px)}
+.ts-tab th{color:#6b7280;font-weight:600;text-align:right;padding:4px 8px;border-bottom:1px solid #e5e7eb}
+.ts-tab th:first-child,.ts-tab td:first-child{text-align:left}
+.ts-tab td{text-align:right;padding:4px 8px;border-bottom:1px solid #f3f4f6;white-space:nowrap}
+.ts-tab td i{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px}
+.ts-tab tr.ts-best td{font-weight:700}
+.ts-note{font-size:11px;color:#6b7280;margin-top:6px;line-height:1.5}

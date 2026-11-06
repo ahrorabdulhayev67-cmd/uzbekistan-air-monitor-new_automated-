@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
   <link href="style.css?v=20261007a" rel="stylesheet">
-  <link href="accuracy.css?v=20261007a" rel="stylesheet">
+  <link href="accuracy.css?v=20261106a" rel="stylesheet">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script>try { const tg = window.Telegram && Telegram.WebApp; if (tg && tg.initData !== undefined) { tg.ready(); tg.expand(); } } catch (e) {}</script>
 </head>
@@ -100,7 +100,20 @@
       <p class="muted">Ansambl skill, %</p>
       <div id="ch-st" class="chart"></div>
     </section>
-  </main>
+  <section class="card ts-card" id="ts-card">
+  <h2>Prognoz va haqiqiy qiymat</h2>
+  <p class="ts-hint">Har bir nuqta — tanlangan muddat oldin berilgan prognoz (masalan, "24 soat" — bir kun oldingi prognoz). Vaqt — Toshkent vaqti.</p>
+  <div class="ts-controls">
+    <select id="ts-st" aria-label="Stansiya"></select>
+    <div class="ts-seg" id="ts-pol"><button data-v="pm10" class="on">PM10</button><button data-v="pm25">PM2.5</button></div>
+    <div class="ts-seg" id="ts-days"><button data-v="1" class="on">1 kun</button><button data-v="2">2 kun</button><button data-v="3">3 kun</button></div>
+    <div class="ts-seg" id="ts-lead"><span>Muddat:</span><button data-v="1">1 soat</button><button data-v="6">6 soat</button><button data-v="12">12 soat</button><button data-v="24" class="on">24 soat</button></div>
+  </div>
+  <div class="ts-models" id="ts-models"></div>
+  <div id="ts-chart" class="ts-chart"></div>
+  <div id="ts-info" class="ts-info"></div>
+</section>
+</main>
 
   <footer class="foot">
     <p>Aniqlik har 3 soatda yangilanadi: har bir prognoz o'sha soatdagi stansiya o'lchovi bilan taqqoslanadi.
@@ -111,5 +124,6 @@
   <script src="tg.js?v=20261005e"></script>
   <script src="config.js?v=20261007a"></script>
   <script src="accuracy.js?v=20261009"></script>
+<script src="accuracy_ts.js?v=20261106a"></script>
 </body>
 </html>
